@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data — raw audio files are large; track only .gitkeep placeholders
+data/raw/gunshot/*.wav
+data/raw/not_gunshot/*.wav
+
+# Processed artifacts — generated, not version-controlled
+data/processed/embeddings/X_embeddings.npy
+data/processed/embeddings/y_labels.npy
+data/processed/embeddings/metadata.json
+data/processed/splits/*.npy
+data/processed/splits/split_info.json
+
+# Trained model weights
+models/saved_weights/
+
+# Experiment run logs
+experiments/runs/*.json
+experiments/runs/*.csv
+
+# TensorFlow Hub cache
+/tmp/tfhub_modules/
+~/.cache/tfhub_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

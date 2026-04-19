@@ -1,0 +1,32 @@
+# YAMNet embedding pipeline configuration
+# Used by: pipeline/extract_embeddings.py, pipeline/split_dataset.py
+#
+# NOTE: These settings govern the YAMNet audio classification pipeline only.
+# The separate CNN experiment uses pipeline/config.py (mel spectrogram params).
+# Do NOT mix these two configurations.
+
+yamnet_url: "https://tfhub.dev/google/yamnet/1"
+
+# Audio preprocessing contract (must match YAMNet's input requirements)
+sample_rate: 16000              # Hz — YAMNet requires exactly 16 kHz
+clip_length_samples: 32000      # samples = 2.0 seconds at 16 kHz
+min_clip_samples: 8000          # samples = 0.5 seconds — below this, warn and flag
+
+# Data quality thresholds
+silence_threshold: 1.0e-6       # max abs amplitude below which clip is "nearly silent"
+
+# AudioSet class index for zero-shot baseline
+gunshot_audioset_class_idx: 427  # "Gunshot, gunfire" in AudioSet ontology
+
+# Paths (relative to project root)
+data:
+  raw_dir: "data/raw"
+  embeddings_dir: "data/processed/embeddings"
+  splits_dir: "data/processed/splits"
+
+# Dataset split ratios
+splits:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  random_state: 42

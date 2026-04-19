@@ -1,0 +1,31 @@
+# FUTURE: Head training experiment configuration template
+#
+# Copy this file and rename it (e.g., experiment_dense_v1.yaml) for each
+# training run. The train_head.py script will read this file and log it
+# alongside metrics in experiments/runs/ for full reproducibility.
+#
+# This template will be populated in a future session when head training
+# is implemented. The fields below are placeholders.
+
+experiment_name: "experiment_dense_v1"
+
+model:
+  head_type: "dense"            # Options: "dense", "bilstm" (future: "cnn_head")
+  hidden_units: [256, 128]
+  dropout_rate: 0.3
+  activation: "relu"
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 1.0e-4
+  early_stopping_patience: 10
+  random_seed: 42
+
+paths:
+  splits_dir: "data/processed/splits"
+  output_dir: "experiments/runs"
+  model_save_dir: "models/saved_weights"
+
+# FUTURE: cascade gate settings will be added here when two-stage system
+# is implemented (see models/cascade/gate.py)
