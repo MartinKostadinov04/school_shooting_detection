@@ -157,13 +157,24 @@ Saves 5 plots to `experiments/plots/threshold_sweep/`:
 ### Step 6 — Live inference
 
 ```bash
-# Default (threshold 0.64, log to inference/detections.jsonl)
-python -m inference.live_inference
+# Minimal (console + JSONL log only)
+python -m inference.live_inference --location "building-a/entrance"
 
-# With external webhook
+# With Ably WebSocket alerts
+export ABLY_API_KEY="your-ably-key"
 python -m inference.live_inference \
-    --threshold 0.64 \
-    --webhook_url https://your-app.com/api/gunshot-event
+    --location  "building-a/entrance" \
+    --channel   "gunshot-detection"
+
+# With Ably + S3 audio snippet upload
+export ABLY_API_KEY="your-ably-key"
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+python -m inference.live_inference \
+    --location   "building-a/entrance" \
+    --channel    "gunshot-detection" \
+    --s3_bucket  my-bucket \
+    --aws_region eu-west-1
 ```
 
 Press **Enter** or **Ctrl+C** to stop. Detections are appended to `inference/detections.jsonl`.
@@ -197,12 +208,32 @@ Microphone (16 kHz mono float32)
   → YAMNet → (1024,) embedding          ← one forward pass per chunk
   → Dense head → gunshot probability
   → if prob >= 0.64:
-      • console log (timestamp + probability)
+      • console log (timestamp + probability + location)
       • append to inference/detections.jsonl
-      • HTTP POST to webhook (if --webhook_url set)
+      • Ably WS publish → "audio:detected:{location}"
+      • (if --s3_bucket) upload 2 s WAV snippet → S3 presigned URL
+                         Ably WS publish → "audio:snippet:{location}:{url}"
 ```
 
 Latency: ≤ 0.5 s from gunshot to detection.
+
+### Ably message format
+
+| Event name | Data |
+|---|---|
+| `audio:detected` | `audio:detected:{location}` |
+| `audio:snippet` | `audio:snippet:{location}:{presigned_url}` |
+
+### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `ABLY_API_KEY` | For WS alerts | Ably API key (or pass `--ably_key`) |
+| `AWS_ACCESS_KEY_ID` | For S3 snippets | AWS credentials (standard boto3 env vars) |
+| `AWS_SECRET_ACCESS_KEY` | For S3 snippets | |
+| `AWS_DEFAULT_REGION` | For S3 snippets | Falls back to `--aws_region` arg |
+
+> **Never hardcode credentials.** All secrets are read from environment variables only.
 
 ---
 
@@ -242,7 +273,7 @@ modal volume get gunshot-data embeddings data/processed/embeddings
 | `train_head.py` | `data/processed/splits/` | `models/saved_weights/`, `experiments/runs/` |
 | `evaluate_test.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/runs/test_results.json` |
 | `threshold_sweep.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/plots/threshold_sweep/` |
-| `live_inference.py` | `models/saved_weights/` | `inference/detections.jsonl`, webhook |
+| `live_inference.py` | `models/saved_weights/` | `inference/detections.jsonl`, Ably WS, S3 |
 
 ---
 
