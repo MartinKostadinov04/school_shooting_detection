@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Send, MessageSquare, X, ClipboardList } from "lucide-react";
 import { useStore } from "@/lib/incidentStore";
-import { useAuth } from "@/hooks/useAuth";
 import { MessageBubble } from "./MessageBubble";
 import { IncidentReportForm } from "./IncidentReportForm";
 import { design } from "@/config/design";
@@ -16,7 +15,6 @@ export function CommunicationWindow({
   viewerRole: "school" | "police";
   filterIncidentId?: string;
 }) {
-  const { user } = useAuth();
   const messages = useStore((s) => s.messages);
   const sendMessage = useStore((s) => s.sendMessage);
 
@@ -52,7 +50,7 @@ export function CommunicationWindow({
           messages={visible}
           viewerRole={viewerRole}
           tab="chat"
-          reportedBy={user?.email ?? "police"}
+          reportedBy="police"
           onReportSubmitted={() => setTab("chat")}
         />
         <Composer text={text} setText={setText} onSubmit={send} />
@@ -92,7 +90,7 @@ export function CommunicationWindow({
             messages={visible}
             viewerRole={viewerRole}
             tab={tab}
-            reportedBy={user?.email ?? "school@demo.com"}
+            reportedBy="school"
             onReportSubmitted={() => setTab("chat")}
           />
           {tab === "chat" && <Composer text={text} setText={setText} onSubmit={send} />}

@@ -5,7 +5,10 @@
       "Bash(python -m training.evaluate_test)",
       "Read(//c/Users/Martin/.claude/projects/c--Users-Martin-OneDrive---IE-University-Escritorio-Uni-6th-semester-AI---ML-Final-Project/62fb2e53-2809-432f-a0b9-b598b77ffc22/tool-results/**)",
       "Bash(python -m experiments.threshold_sweep)",
-      "Bash(python -c \"from inference.live_inference import AudioCapture, _alert; from pipeline.extract_embeddings import load_yamnet, extract_embedding; print\\('imports OK'\\)\")"
+      "Bash(python -c \"from inference.live_inference import AudioCapture, _alert; from pipeline.extract_embeddings import load_yamnet, extract_embedding; print\\('imports OK'\\)\")",
+      "WebFetch(domain:ably.com)",
+      "Bash(python -c \"from inference.live_inference import AblyPublisher, AudioCapture, _alert, _s3_upload; print\\('imports OK'\\)\")",
+      "WebFetch(domain:api.github.com)"
     ]
   }
 }

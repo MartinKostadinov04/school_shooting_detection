@@ -23,7 +23,24 @@
       "Bash(python -c \"import modal; img = modal.Image.debian_slim\\(\\); print\\([m for m in dir\\(img\\) if 'local' in m.lower\\(\\) or 'mount' in m.lower\\(\\) or 'copy' in m.lower\\(\\) or 'add' in m.lower\\(\\)]\\)\")",
       "Bash(modal volume:*)",
       "Bash(python -m pipeline.split_dataset --embeddings_dir data/processed/embeddings --output_dir data/processed/splits)",
-      "Bash(python -m training.train_head)"
+      "Bash(python -m training.train_head)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Read(//tmp/**)",
+      "Read(//c/tmp/**)",
+      "Bash(xargs ls *)",
+      "Bash(git ls-remote *)",
+      "Read(//c/Users/Martin/**)",
+      "Bash(python -c \"from api.main import app; print\\('API import OK'\\)\")",
+      "Bash(mkdir -p data)",
+      "Bash(python -c ' *)",
+      "Bash(uvicorn api.main:app --reload --port 8000)",
+      "Bash(echo \"API PID: $!\")",
+      "Bash(npm run *)",
+      "Bash(echo \"Frontend PID: $!\")",
+      "Bash(npm install *)",
+      "Bash(node_modules/.bin/vite.cmd dev *)",
+      "PowerShell(netstat -ano)",
+      "PowerShell(Invoke-RestMethod \"http://localhost:8000/api/schools/default/devices\")"
     ]
   }
 }

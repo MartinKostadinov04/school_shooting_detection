@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SchoolRouteImport } from './routes/school'
 import { Route as PoliceRouteImport } from './routes/police'
-import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PoliceSchoolIdRouteImport } from './routes/police.$schoolId'
 
@@ -23,11 +22,6 @@ const SchoolRoute = SchoolRouteImport.update({
 const PoliceRoute = PoliceRouteImport.update({
   id: '/police',
   path: '/police',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -43,14 +37,12 @@ const PoliceSchoolIdRoute = PoliceSchoolIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/login': typeof LoginRoute
   '/police': typeof PoliceRouteWithChildren
   '/school': typeof SchoolRoute
   '/police/$schoolId': typeof PoliceSchoolIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/login': typeof LoginRoute
   '/police': typeof PoliceRouteWithChildren
   '/school': typeof SchoolRoute
   '/police/$schoolId': typeof PoliceSchoolIdRoute
@@ -58,22 +50,20 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/login': typeof LoginRoute
   '/police': typeof PoliceRouteWithChildren
   '/school': typeof SchoolRoute
   '/police/$schoolId': typeof PoliceSchoolIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/police' | '/school' | '/police/$schoolId'
+  fullPaths: '/' | '/police' | '/school' | '/police/$schoolId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/police' | '/school' | '/police/$schoolId'
-  id: '__root__' | '/' | '/login' | '/police' | '/school' | '/police/$schoolId'
+  to: '/' | '/police' | '/school' | '/police/$schoolId'
+  id: '__root__' | '/' | '/police' | '/school' | '/police/$schoolId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  LoginRoute: typeof LoginRoute
   PoliceRoute: typeof PoliceRouteWithChildren
   SchoolRoute: typeof SchoolRoute
 }
@@ -92,13 +82,6 @@ declare module '@tanstack/react-router' {
       path: '/police'
       fullPath: '/police'
       preLoaderRoute: typeof PoliceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -131,10 +114,18 @@ const PoliceRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  LoginRoute: LoginRoute,
   PoliceRoute: PoliceRouteWithChildren,
   SchoolRoute: SchoolRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

@@ -1,6 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { useAuth } from "@/hooks/useAuth";
+import { createFileRoute } from "@tanstack/react-router";
 import { useAbly } from "@/hooks/useAbly";
 import { SchoolSidebar } from "@/components/SchoolSidebar";
 import { NotificationBar } from "@/components/notifications/NotificationBar";
@@ -25,20 +23,9 @@ export const Route = createFileRoute("/school")({
 });
 
 function SchoolPage() {
-  const { user, ready } = useAuth();
-  const navigate = useNavigate();
   useAbly();
-
   const incidents = useStore((s) => s.incidents);
   const connection = useStore((s) => s.connection);
-
-  useEffect(() => {
-    if (!ready) return;
-    if (!user) navigate({ to: "/login" });
-    else if (user.role !== "school") navigate({ to: "/police" });
-  }, [user, ready, navigate]);
-
-  if (!ready || !user) return null;
 
   const activeCount = incidents.filter((i) => i.status !== "RESOLVED").length;
   const newCount = incidents.filter((i) => i.status === "NEW").length;
@@ -48,7 +35,6 @@ function SchoolPage() {
       <SchoolSidebar />
 
       <main className="flex flex-1 flex-col overflow-hidden">
-        {/* Top bar */}
         <div
           className="flex items-center justify-between border-b border-border bg-surface px-4"
           style={{ height: design.layout.headerHeight }}

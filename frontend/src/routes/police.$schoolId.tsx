@@ -1,7 +1,6 @@
-import { createFileRoute, useNavigate, Link, notFound } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { ArrowLeft, Eye, LogOut } from "lucide-react";
-import { useAuth } from "@/hooks/useAuth";
+import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { useState } from "react";
+import { ArrowLeft, Eye } from "lucide-react";
 import { useAbly } from "@/hooks/useAbly";
 import { useStore } from "@/lib/incidentStore";
 import { PoliceIncidentFeed } from "@/components/police/PoliceIncidentFeed";
@@ -70,23 +69,11 @@ export const Route = createFileRoute("/police/$schoolId")({
 
 function SchoolDispatchPage() {
   const { school } = Route.useLoaderData();
-  const { user, ready, logout } = useAuth();
-  const navigate = useNavigate();
-  // TRANSFER: pass schoolId into useAbly so each school subscribes to its
-  // own channel (e.g. `gunshot-detection.{schoolId}`). Demo is single-tenant.
   useAbly();
 
   const incidents = useStore((s) => s.incidents);
   const connection = useStore((s) => s.connection);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!ready) return;
-    if (!user) navigate({ to: "/login" });
-    else if (user.role !== "police") navigate({ to: "/school" });
-  }, [user, ready, navigate]);
-
-  if (!ready || !user) return null;
 
   const selected = incidents.find((i) => i.id === selectedId) ?? null;
 
@@ -111,20 +98,10 @@ function SchoolDispatchPage() {
             <div className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
               {school.name}
             </div>
-            <div className="text-[10px] text-muted-foreground">
-              {school.district} · Operator: {user.displayName}
-            </div>
+            <div className="text-[10px] text-muted-foreground">{school.district}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <ConnectionIndicator state={connection} />
-          <button
-            onClick={logout}
-            className="inline-flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:border-tactical-red/50 hover:text-tactical-red"
-          >
-            <LogOut className="h-3 w-3" /> Sign out
-          </button>
-        </div>
+        <ConnectionIndicator state={connection} />
       </header>
 
       <div className="flex flex-1 gap-3 overflow-hidden p-3">
@@ -136,11 +113,6 @@ function SchoolDispatchPage() {
         </div>
 
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-          {/*
-            Live floor plan gives dispatch the same situational awareness as
-            the school operator. TRANSFER: scope devices by schoolId once the
-            incident store is multi-tenant.
-          */}
           <SchoolMap />
           <ActiveIncidentPanel incident={selected} />
         </div>

@@ -1,7 +1,5 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { Eye, LogOut, Building2, ChevronRight, Radio, Users, Cpu } from "lucide-react";
-import { useAuth } from "@/hooks/useAuth";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Eye, Building2, ChevronRight, Radio, Users, Cpu } from "lucide-react";
 import { useStore } from "@/lib/incidentStore";
 import { ConnectionIndicator } from "@/components/ui/ConnectionIndicator";
 import { design } from "@/config/design";
@@ -21,20 +19,8 @@ export const Route = createFileRoute("/police")({
 });
 
 function PoliceSchoolsPage() {
-  const { user, ready, logout } = useAuth();
-  const navigate = useNavigate();
   const incidents = useStore((s) => s.incidents);
   const connection = useStore((s) => s.connection);
-
-  useEffect(() => {
-    if (!ready) return;
-    if (!user) navigate({ to: "/login" });
-    else if (user.role !== "police") navigate({ to: "/school" });
-  }, [user, ready, navigate]);
-
-  if (!ready || !user) return null;
-
-  // TRANSFER: in real backend, active count is per-school. Demo is single-tenant.
   const activeCount = incidents.filter((i) => i.status !== "RESOLVED").length;
 
   return (
@@ -51,20 +37,10 @@ function PoliceSchoolsPage() {
             <div className="font-mono text-xs font-bold uppercase tracking-widest text-foreground">
               {design.app.name} · Dispatch
             </div>
-            <div className="text-[10px] text-muted-foreground">
-              Operator: {user.displayName} ({user.email})
-            </div>
+            <div className="text-[10px] text-muted-foreground">Police Operations Center</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <ConnectionIndicator state={connection} />
-          <button
-            onClick={logout}
-            className="inline-flex items-center gap-1.5 rounded-sm border border-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:border-tactical-red/50 hover:text-tactical-red"
-          >
-            <LogOut className="h-3 w-3" /> Sign out
-          </button>
-        </div>
+        <ConnectionIndicator state={connection} />
       </header>
 
       <main className="flex-1 overflow-y-auto p-6">
@@ -93,7 +69,6 @@ function PoliceSchoolsPage() {
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {POLICE_SCHOOLS.map((school) => {
-              // TRANSFER: per-school active count when store is multi-tenant.
               const schoolActive = activeCount;
               return (
                 <Link
@@ -145,7 +120,6 @@ function PoliceSchoolsPage() {
               );
             })}
 
-            {/* Placeholder slot — TRANSFER: remove when real list is wired. */}
             <div className="flex flex-col items-center justify-center rounded-md border border-dashed border-border/60 bg-surface/40 p-6 text-center">
               <Building2 className="mb-2 h-6 w-6 text-muted-foreground" />
               <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
