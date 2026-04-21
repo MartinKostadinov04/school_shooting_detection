@@ -1,0 +1,236 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * TacticalEye — Dark tactical command center theme.
+ * Single source of design truth: src/config/design.ts.
+ * Token values mirror that file.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+
+  --color-tactical-amber: var(--tactical-amber);
+  --color-tactical-red: var(--tactical-red);
+  --color-tactical-green: var(--tactical-green);
+  --color-tactical-yellow: var(--tactical-yellow);
+  --color-tactical-cyan: var(--tactical-cyan);
+  --color-tactical-violet: var(--tactical-violet);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --radius: 0.375rem;
+
+  /* Tactical dark palette — applied at root (single-theme app) */
+  --background: oklch(0.16 0.012 260);
+  --foreground: oklch(0.96 0.005 250);
+
+  --surface: oklch(0.2 0.014 260);
+  --surface-raised: oklch(0.235 0.016 260);
+
+  --card: oklch(0.205 0.014 260);
+  --card-foreground: oklch(0.96 0.005 250);
+
+  --popover: oklch(0.21 0.015 260);
+  --popover-foreground: oklch(0.96 0.005 250);
+
+  /* Tactical amber as primary brand */
+  --primary: oklch(0.78 0.16 75);
+  --primary-foreground: oklch(0.16 0.012 260);
+
+  --secondary: oklch(0.27 0.018 260);
+  --secondary-foreground: oklch(0.96 0.005 250);
+
+  --muted: oklch(0.245 0.014 260);
+  --muted-foreground: oklch(0.68 0.02 255);
+
+  --accent: oklch(0.3 0.02 260);
+  --accent-foreground: oklch(0.96 0.005 250);
+
+  --destructive: oklch(0.62 0.24 25);
+  --destructive-foreground: oklch(0.98 0 0);
+
+  --border: oklch(0.3 0.018 260);
+  --input: oklch(0.27 0.018 260);
+  --ring: oklch(0.78 0.16 75);
+
+  /* Tactical signal colors */
+  --tactical-amber: oklch(0.78 0.16 75);
+  --tactical-red: oklch(0.62 0.24 25);
+  --tactical-green: oklch(0.72 0.18 145);
+  --tactical-yellow: oklch(0.85 0.17 95);
+  --tactical-cyan: oklch(0.74 0.13 215);
+  --tactical-violet: oklch(0.65 0.18 295);
+
+  --chart-1: var(--tactical-amber);
+  --chart-2: var(--tactical-cyan);
+  --chart-3: var(--tactical-green);
+  --chart-4: var(--tactical-violet);
+  --chart-5: var(--tactical-red);
+
+  --sidebar: oklch(0.18 0.013 260);
+  --sidebar-foreground: oklch(0.92 0.005 250);
+  --sidebar-primary: oklch(0.78 0.16 75);
+  --sidebar-primary-foreground: oklch(0.16 0.012 260);
+  --sidebar-accent: oklch(0.26 0.016 260);
+  --sidebar-accent-foreground: oklch(0.96 0.005 250);
+  --sidebar-border: oklch(0.28 0.016 260);
+  --sidebar-ring: oklch(0.78 0.16 75);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Subtle tactical grid background utility */
+@layer utilities {
+  .bg-tactical-grid {
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in oklab, var(--color-foreground) 4%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in oklab, var(--color-foreground) 4%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 32px 32px;
+  }
+
+  .text-tactical-amber {
+    color: var(--tactical-amber);
+  }
+  .text-tactical-red {
+    color: var(--tactical-red);
+  }
+  .text-tactical-green {
+    color: var(--tactical-green);
+  }
+  .text-tactical-yellow {
+    color: var(--tactical-yellow);
+  }
+  .text-tactical-cyan {
+    color: var(--tactical-cyan);
+  }
+
+  .bg-tactical-amber {
+    background-color: var(--tactical-amber);
+  }
+  .bg-tactical-red {
+    background-color: var(--tactical-red);
+  }
+  .bg-tactical-green {
+    background-color: var(--tactical-green);
+  }
+  .bg-tactical-yellow {
+    background-color: var(--tactical-yellow);
+  }
+  .bg-tactical-cyan {
+    background-color: var(--tactical-cyan);
+  }
+
+  .border-tactical-amber {
+    border-color: var(--tactical-amber);
+  }
+  .border-tactical-red {
+    border-color: var(--tactical-red);
+  }
+  .border-tactical-green {
+    border-color: var(--tactical-green);
+  }
+
+  @keyframes tactical-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 currentColor;
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 0 8px transparent;
+      opacity: 0.7;
+    }
+  }
+  .animate-tactical-pulse {
+    animation: tactical-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes tactical-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .animate-tactical-blink {
+    animation: tactical-blink 1s ease-in-out infinite;
+  }
+}
