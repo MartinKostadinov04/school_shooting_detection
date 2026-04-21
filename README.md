@@ -245,6 +245,34 @@ python -m inference.live_inference \
 
 Press **Enter** or **Ctrl+C** to stop. Detections are appended to `inference/detections.jsonl`.
 
+### Step 7 — Demo / file inference
+
+Run inference on a WAV or MP3 file instead of the microphone. Two modes:
+
+**Single terminal** — loads the model and runs everything in one process:
+
+```bash
+python -m inference.live_inference \
+    --demo_file path/to/shot.wav \
+    --location  "Gymnasium"
+```
+
+Audio plays through the speakers while the model scores each 0.5 s chunk. Ably alerts fire on detection exactly as in live mode.
+
+**Two-terminal demo** — inference engine stays running; audio is injected on demand:
+
+```bash
+# Terminal 1 — start the inference engine (binds UDP port 9999)
+python -m inference.live_inference \
+    --run \
+    --location "Gymnasium"
+
+# Terminal 2 — stream any file into it (no model loaded here)
+python -m inference.live_inference --demo_file path/to/shot.wav
+```
+
+`--demo_file` auto-detects whether `--run` is listening on the port. If it is, it acts as a sender; otherwise it falls back to the single-terminal path. Use `--port` to change the UDP port (default: 9999).
+
 ---
 
 ## Model Architecture
@@ -267,13 +295,23 @@ Training config (default):
 
 ## Live Inference Architecture
 
+Three input modes feed the same pipeline:
+
 ```
-Microphone (16 kHz mono float32)
-  → sounddevice callback (8,000 samples = 0.5 s chunks)
-  → Ring buffer (32,000 samples = last 2 s)
-  → YAMNet → (1024,) embedding          ← one forward pass per chunk
-  → Dense head → gunshot probability
-  → if prob >= 0.64:
+Audio source (one of):
+  A) Microphone      → sounddevice InputStream callback
+  B) --demo_file     → librosa.load → chunked in-process
+  C) --run + sender  → UDP socket (127.0.0.1:9999) ← --demo_file in T2
+          ↓
+  _process_chunk()  (shared by all three modes)
+          ↓
+  Ring buffer (32,000 samples = last 2 s)
+          ↓
+  YAMNet → (1024,) embedding    ← one forward pass per 0.5 s chunk
+          ↓
+  Dense head → gunshot probability
+          ↓
+  if prob >= 0.64:
       • console log (timestamp + probability + location)
       • append to inference/detections.jsonl
       • Ably WS publish → "audio:detected:{location}"
@@ -281,7 +319,7 @@ Microphone (16 kHz mono float32)
                          Ably WS publish → "audio:snippet:{location}:{url}"
 ```
 
-Latency: ≤ 0.5 s from gunshot to detection.
+Latency: ≤ 0.5 s from audio to detection.
 
 ### Ably message format
 

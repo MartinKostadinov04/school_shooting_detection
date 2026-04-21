@@ -20,15 +20,21 @@ AWS credentials:  set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_RE
 
 Usage
 -----
-    python -m inference.live_inference \\
-        --location  "building-a/entrance" \\
-        --channel   "gunshot-detection"   \\
-        --ably_key  "YOUR_KEY"            \\  # or set ABLY_API_KEY env var
-        [--s3_bucket  my-bucket]          \\  # enables audio snippet upload
-        [--aws_region eu-west-1]          \\
-        [--threshold  0.64]               \\
-        [--log_file   inference/detections.jsonl] \\
-        [--device     0]
+  Live mic (default):
+    python -m inference.live_inference --location "Gymnasium"
+
+  Demo mode — two terminals:
+    # Terminal 1: start inference engine (no mic, waits on UDP port 9999)
+    python -m inference.live_inference --run --location "Gymnasium"
+
+    # Terminal 2: stream an audio file into it
+    python -m inference.live_inference --demo_file shot.wav
+
+  Optional flags (all modes):
+    --threshold 0.64  --log_file inference/detections.jsonl
+    --ably_key KEY    --channel gunshot-detection
+    --s3_bucket my-bucket  --aws_region eu-west-1
+    --port 9999       (change UDP port for --run / --demo_file)
 """
 
 import argparse
@@ -68,6 +74,8 @@ DEFAULT_THRESHOLD  = 0.64
 DEFAULT_CHANNEL    = "gunshot-detection"
 DEFAULT_LOCATION   = "unknown"
 S3_PRESIGN_EXPIRY  = 3600    # seconds
+DEFAULT_DEMO_PORT  = 9999    # UDP port for --run / --demo_file IPC
+CHUNK_BYTES        = CHUNK_SAMPLES * 4  # float32 = 4 bytes per sample
 
 
 # ---------------------------------------------------------------------------
@@ -241,12 +249,8 @@ class AudioCapture:
         self._lock      = threading.Lock()
         self._stream    = None
 
-    def _callback(self, indata, frames, time_info, status):
-        if status:
-            logger.warning("sounddevice: %s", status)
-
-        chunk = indata[:CHUNK_SAMPLES, 0].astype(np.float32)
-
+    def _process_chunk(self, chunk: np.ndarray) -> float:
+        """Core pipeline: update ring buffer, run inference, fire alert if triggered."""
         with self._lock:
             self._buffer = np.roll(self._buffer, -CHUNK_SAMPLES)
             self._buffer[-CHUNK_SAMPLES:] = chunk
@@ -268,6 +272,13 @@ class AudioCapture:
                 s3_bucket=self._s3_bucket,
                 aws_region=self._aws_region,
             )
+        return prob
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            logger.warning("sounddevice: %s", status)
+        chunk = indata[:CHUNK_SAMPLES, 0].astype(np.float32)
+        self._process_chunk(chunk)
 
     def _run_inference(self, audio: np.ndarray) -> float:
         embedding = extract_embedding(audio, self._yamnet)
@@ -299,6 +310,137 @@ class AudioCapture:
             self._stream.stop()
             self._stream.close()
 
+    def run_demo_file_inprocess(self, file_path: Path) -> None:
+        """Single-terminal demo: load file, play audio, run inference here."""
+        import librosa
+        import sounddevice as sd
+        import time
+
+        logger.info("Loading %s ...", file_path)
+        audio, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
+        duration  = len(audio) / SAMPLE_RATE
+        n_chunks  = len(audio) // CHUNK_SAMPLES
+        chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
+
+        print(f"\n▶  '{file_path.name}'  ({duration:.1f} s)  —  Ctrl+C to stop\n")
+        sd.play(audio, samplerate=SAMPLE_RATE)
+
+        for i in range(n_chunks):
+            t0    = time.perf_counter()
+            chunk = audio[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES]
+            prob  = self._process_chunk(chunk)
+            print(f"  [{i * chunk_dur:5.1f}s]  prob={prob:.4f}", end="\r")
+            spent = time.perf_counter() - t0
+            if chunk_dur - spent > 0:
+                time.sleep(chunk_dur - spent)
+
+        sd.wait()
+        print(f"\n\nDone. {n_chunks} chunks processed.")
+
+    def run_socket_listener(self, port: int) -> None:
+        """
+        --run mode: bind a UDP socket and process every chunk that arrives.
+        Blocks until KeyboardInterrupt. The mic is NOT opened — all audio
+        comes from whatever sends to 127.0.0.1:{port} (e.g. --demo_file).
+        """
+        import socket
+        import time
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", port))
+        sock.settimeout(1.0)          # allows Ctrl+C to be caught cleanly
+
+        logger.info(
+            "Listening on UDP 127.0.0.1:%d  |  threshold=%.2f  |  location=%s",
+            port, self._threshold, self._location,
+        )
+        print(f"\n  Inference engine ready — waiting for audio on port {port} ...\n"
+              f"  Feed a file:  python -m inference.live_inference --demo_file <file>\n"
+              f"  Ctrl+C to stop.\n")
+
+        chunk_duration = CHUNK_SAMPLES / SAMPLE_RATE
+        while True:
+            try:
+                data, _ = sock.recvfrom(CHUNK_BYTES + 64)
+            except socket.timeout:
+                continue
+
+            if len(data) != CHUNK_BYTES:
+                logger.warning("Unexpected chunk size %d bytes — skipping", len(data))
+                continue
+
+            chunk = np.frombuffer(data, dtype=np.float32).copy()
+            prob  = self._process_chunk(chunk)
+            elapsed_s = time.monotonic()
+            print(f"  prob={prob:.4f}", end="\r")
+
+        sock.close()
+
+
+# ---------------------------------------------------------------------------
+# Demo file sender (--demo_file, standalone — no model needed)
+# ---------------------------------------------------------------------------
+
+def _listener_reachable(port: int) -> bool:
+    """Return True if a --run listener is accepting on 127.0.0.1:{port}."""
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.2)
+        # Send a zero-length probe; the listener will discard it (wrong size)
+        sock.sendto(b"", ("127.0.0.1", port))
+        sock.close()
+        # If the port is bound, sendto succeeds; if nothing is bound on UDP,
+        # we may get an ICMP port-unreachable on some OSes but not on Windows.
+        # So we do a second check: try to bind to the same port — if it fails,
+        # something is already listening there.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", port))
+        probe.close()
+        return False   # bind succeeded → port is free → no listener
+    except OSError:
+        return True    # bind failed → port is taken → listener is up
+
+
+def send_demo_file(file_path: Path, port: int) -> None:
+    """
+    Load an audio file, play it through the speakers, and stream 0.5 s chunks
+    over UDP to the --run listener at 127.0.0.1:{port}.
+    No model is loaded here — inference happens in the listener process.
+    """
+    import socket
+    import time
+    import librosa
+    import sounddevice as sd
+
+    logger.info("Loading %s ...", file_path)
+    audio, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
+    duration   = len(audio) / SAMPLE_RATE
+    n_chunks   = len(audio) // CHUNK_SAMPLES
+    chunk_dur  = CHUNK_SAMPLES / SAMPLE_RATE
+
+    print(f"\n▶  '{file_path.name}'  ({duration:.1f} s, {n_chunks} chunks)"
+          f"  →  127.0.0.1:{port}\n")
+
+    sd.play(audio, samplerate=SAMPLE_RATE)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for i in range(n_chunks):
+        t0    = time.perf_counter()
+        chunk = audio[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES].astype(np.float32)
+        sock.sendto(chunk.tobytes(), ("127.0.0.1", port))
+
+        elapsed = i * chunk_dur
+        print(f"  [{elapsed:5.1f}s / {duration:.1f}s]  sent chunk {i+1}/{n_chunks}", end="\r")
+
+        spent = time.perf_counter() - t0
+        if chunk_dur - spent > 0:
+            time.sleep(chunk_dur - spent)
+
+    sock.close()
+    sd.wait()
+    print(f"\n\n  Done — {n_chunks} chunks sent.")
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -324,16 +466,36 @@ def main() -> None:
                         help="S3 bucket for audio snippet upload. Omit to skip.")
     parser.add_argument("--aws_region", type=str,   default="us-east-1",
                         help="AWS region for S3. Default: us-east-1")
+    parser.add_argument("--run",        action="store_true",
+                        help="Start the inference engine on a UDP socket (no mic).")
+    parser.add_argument("--demo_file",  type=Path,  default=None,
+                        help="Audio file (WAV/MP3) to stream to a --run listener.")
+    parser.add_argument("--port",       type=int,   default=DEFAULT_DEMO_PORT,
+                        help=f"UDP port for --run / --demo_file IPC. Default: {DEFAULT_DEMO_PORT}")
     args = parser.parse_args()
 
+    # --demo_file: if a --run listener is up, act as sender only.
+    # Otherwise load the model and run inference in-process (single terminal).
+    if args.demo_file:
+        if not args.demo_file.exists():
+            logger.error("File not found: %s", args.demo_file)
+            sys.exit(1)
+        if _listener_reachable(args.port):
+            logger.info("--run listener detected on port %d — acting as sender.", args.port)
+            try:
+                send_demo_file(args.demo_file, args.port)
+            except KeyboardInterrupt:
+                print("\nStopped.")
+            return
+        logger.info("No --run listener on port %d — running inference in-process.", args.port)
+        # fall through to model loading below, then call run_demo_file_inprocess
+
+    # All other modes need the model
     if not args.model_path.exists():
         logger.error("Model weights not found: %s", args.model_path)
         sys.exit(1)
 
-    # Resolve Ably key
-    ably_key = args.ably_key or os.environ.get("ABLY_API_KEY")
-
-    # Connect to Ably (optional — warn but continue without it)
+    ably_key  = args.ably_key or os.environ.get("ABLY_API_KEY")
     publisher = None
     if ably_key:
         try:
@@ -361,6 +523,31 @@ def main() -> None:
         device=args.device,
     )
 
+    # --demo_file in-process (no listener was running)
+    if args.demo_file:
+        try:
+            capture.run_demo_file_inprocess(args.demo_file)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+        finally:
+            if publisher:
+                publisher.close()
+            logger.info("Detections saved to: %s", args.log_file)
+        return
+
+    # --run: socket listener (blocks until Ctrl+C)
+    if args.run:
+        try:
+            capture.run_socket_listener(args.port)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+        finally:
+            if publisher:
+                publisher.close()
+            logger.info("Detections saved to: %s", args.log_file)
+        return
+
+    # Default: live microphone
     capture.start()
     print("\nPress Enter to stop ...\n")
     try:
