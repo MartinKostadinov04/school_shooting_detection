@@ -1,5 +1,5 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ArrowLeft, Eye } from "lucide-react";
 import { useAbly } from "@/hooks/useAbly";
 import { useStore } from "@/lib/incidentStore";
@@ -71,9 +71,12 @@ function SchoolDispatchPage() {
   const { school } = Route.useLoaderData();
   useAbly();
 
-  const incidents = useStore((s) => s.incidents);
-  const connection = useStore((s) => s.connection);
+  const loadFromApi = useStore((s) => s.loadFromApi);
+  const incidents   = useStore((s) => s.incidents);
+  const connection  = useStore((s) => s.connection);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => { loadFromApi(); }, []);
 
   const selected = incidents.find((i) => i.id === selectedId) ?? null;
 

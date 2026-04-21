@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { useAbly } from "@/hooks/useAbly";
 import { SchoolSidebar } from "@/components/SchoolSidebar";
 import { NotificationBar } from "@/components/notifications/NotificationBar";
@@ -24,8 +25,11 @@ export const Route = createFileRoute("/school")({
 
 function SchoolPage() {
   useAbly();
-  const incidents = useStore((s) => s.incidents);
-  const connection = useStore((s) => s.connection);
+  const loadFromApi  = useStore((s) => s.loadFromApi);
+  const incidents    = useStore((s) => s.incidents);
+  const connection   = useStore((s) => s.connection);
+
+  useEffect(() => { loadFromApi(); }, []);
 
   const activeCount = incidents.filter((i) => i.status !== "RESOLVED").length;
   const newCount = incidents.filter((i) => i.status === "NEW").length;

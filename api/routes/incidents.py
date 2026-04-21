@@ -19,10 +19,17 @@ def _today_prefix() -> str:
 
 def _next_incident_id(db: Session) -> str:
     prefix = _today_prefix()
-    count = db.query(models.Incident).filter(
-        models.Incident.id.like(f"{prefix}%")
-    ).count()
-    return f"{prefix}-{_pad(count + 1, 3)}"
+    existing = db.query(models.Incident.id).filter(
+        models.Incident.id.like(f"{prefix}-%")
+    ).all()
+    if not existing:
+        return f"{prefix}-001"
+    max_seq = max(
+        int(row.id.rsplit("-", 1)[-1])
+        for row in existing
+        if row.id.rsplit("-", 1)[-1].isdigit()
+    )
+    return f"{prefix}-{_pad(max_seq + 1, 3)}"
 
 
 def _timeline_out(t: models.IncidentTimeline) -> schemas.TimelineEntryOut:
