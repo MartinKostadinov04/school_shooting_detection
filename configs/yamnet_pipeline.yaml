@@ -30,3 +30,35 @@ splits:
   val: 0.15
   test: 0.15
   random_state: 42
+
+# ---------------------------------------------------------------------------
+# Modal cloud compute
+# ---------------------------------------------------------------------------
+# Used by: pipeline/modal_extract.py
+#
+# API credentials — store the env var NAMES here, never the actual values.
+# Set the real tokens in your shell before running:
+#   export MODAL_TOKEN_ID="your-token-id"
+#   export MODAL_TOKEN_SECRET="your-token-secret"
+# Or authenticate once via the CLI: modal token new
+modal:
+  token_id_env: "MODAL_TOKEN_ID"
+  token_secret_env: "MODAL_TOKEN_SECRET"
+  app_name: "gunshot-detection-extraction"
+  volume_name: "gunshot-data"
+
+  # GPU — Modal available options: T4, L4, A10G, A100-40GB, A100-80GB, H100
+  # Note: T1000 is a workstation GPU not available on Modal; T4 is the entry-level datacenter equivalent.
+  gpu: "T4"
+
+  # Resource limits
+  timeout_seconds: 7200    # 2 hours — enough for 24k clips
+  memory_mb: 16384         # 16 GB RAM
+
+  # Parallel WAV prefetch threads inside the container
+  workers: 8
+
+  # Remote paths inside the Modal volume (mounted at /vol)
+  volume_mount: "/vol"
+  remote_data_dir: "/vol"
+  remote_output_dir: "/vol/embeddings"

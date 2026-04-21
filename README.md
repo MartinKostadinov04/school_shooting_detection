@@ -1,25 +1,27 @@
-# Gunshot Detection — Part A: YAMNet Embedding Pipeline
+# Gunshot Detection — Part A: YAMNet + Dense Head
 
 Acoustic gunshot detection for school safety. Part A (this repo) covers the
-audio classification pipeline: preprocessing, YAMNet feature extraction, and
-dataset splitting. Part B (separate repo) is a YOLO-based vision pipeline
-triggered when a gunshot is detected.
+full audio classification pipeline: preprocessing, YAMNet feature extraction,
+dense head training, threshold optimisation, and real-time microphone inference.
+Part B (separate repo) is a YOLO-based vision pipeline triggered when a gunshot
+is detected.
 
 ---
 
-## What This Repo Currently Contains
+## Results
 
-- **`pipeline/preprocessing.py`** — Audio normalization and length fixing
-- **`pipeline/extract_embeddings.py`** — YAMNet embedding extraction (run once, cache to disk)
-- **`pipeline/split_dataset.py`** — Stratified 70/15/15 train/val/test split
-- **`tests/`** — Unit tests for each pipeline module
-- **`configs/yamnet_pipeline.yaml`** — All pipeline hyperparameters
+Trained on **24,144 clips** (4,621 gunshot / 19,523 not_gunshot). Test set: 3,622 samples.
 
-## What Is NOT Yet Implemented
+| Metric | Value |
+|---|---|
+| Accuracy | 97.2% |
+| F1 | 0.925 |
+| AUC-ROC | 0.994 |
+| Precision | 93.6% |
+| Recall | 91.3% |
+| TP / FP / FN / TN | 633 / 43 / 60 / 2886 |
 
-Head training, the two-stage cascade system, threshold tuning, live inference,
-and weapon-type sub-classification are all planned for future sessions.
-Placeholder files with comments exist for each.
+> Threshold: **0.64** (selected via full sweep, see `experiments/plots/threshold_sweep/`)
 
 ---
 
@@ -29,49 +31,47 @@ Placeholder files with comments exist for each.
 .
 ├── README.md
 ├── requirements.txt
-├── .gitignore
+├── wav_info.py                         ← WAV file inspector utility
 │
 ├── configs/
-│   ├── yamnet_pipeline.yaml       ← YAMNet pipeline config (edit paths here)
-│   └── experiment_template.yaml   ← [FUTURE] head training config template
+│   ├── yamnet_pipeline.yaml            ← pipeline + Modal config (single source of truth)
+│   └── experiment_template.yaml
 │
 ├── data/
 │   ├── raw/
-│   │   ├── gunshot/               ← Put gunshot WAVs here (read-only)
-│   │   └── not_gunshot/           ← Put non-gunshot WAVs here (read-only)
+│   │   ├── gunshot/                   ← 4,621 WAVs (label 1)
+│   │   └── not_gunshot/               ← 19,523 WAVs (label 0)
 │   └── processed/
-│       ├── embeddings/            ← Output of extract_embeddings.py
-│       └── splits/                ← Output of split_dataset.py
+│       ├── embeddings/                ← output of extract_embeddings.py
+│       └── splits/                    ← 70/15/15 train/val/test splits
 │
 ├── pipeline/
-│   ├── config.py                  ← CNN experiment mel params (NOT for YAMNet)
-│   ├── preprocessing.py           ← preprocess_clip(), audit_dataset()
-│   ├── extract_embeddings.py      ← YAMNet embedding extraction CLI
-│   └── split_dataset.py           ← Train/val/test split CLI
+│   ├── extract_embeddings.py          ← YAMNet extraction CLI (local)
+│   ├── modal_extract.py               ← YAMNet extraction on Modal cloud GPU (T4)
+│   └── split_dataset.py               ← stratified train/val/test split
 │
 ├── models/
-│   ├── head_dense.py              ← [FUTURE] Dense MLP head
-│   ├── head_bilstm.py             ← [FUTURE] BiLSTM head
-│   └── cascade/gate.py            ← [FUTURE] Two-stage cascade gate
+│   ├── head_dense.py                  ← Dense MLP head (build_dense_head)
+│   └── saved_weights/
+│       └── dense_head_best.keras      ← best checkpoint (val_loss)
 │
 ├── training/
-│   └── train_head.py              ← [FUTURE] Head training script
+│   ├── train_head.py                  ← training CLI with early stopping + class weights
+│   └── evaluate_test.py               ← held-out test set evaluation
 │
 ├── inference/
-│   └── live_inference.py          ← [FUTURE] Live microphone inference
+│   └── live_inference.py              ← real-time microphone inference (sliding window)
 │
 ├── experiments/
-│   └── runs/                      ← [FUTURE] Per-run JSON/CSV metric logs
+│   ├── threshold_sweep.py             ← sweep thresholds 0.02–0.98, save plots
+│   ├── runs/                          ← per-run JSON (train + test metrics)
+│   └── plots/
+│       └── threshold_sweep/           ← PR curve, ROC, F1 vs threshold, metrics table
 │
 └── tests/
-    ├── test_preprocessing.py
     ├── test_extract_embeddings.py
-    └── test_split_dataset.py
+    └── test_yamnet_integration.py
 ```
-
-> **Important:** `pipeline/config.py` holds mel spectrogram parameters for a
-> separate CNN experiment. It is **not** used by the YAMNet pipeline. The
-> YAMNet pipeline reads `configs/yamnet_pipeline.yaml` exclusively.
 
 ---
 
@@ -81,61 +81,38 @@ Placeholder files with comments exist for each.
 pip install -r requirements.txt
 ```
 
-Requires Python 3.10+. TensorFlow is only needed for `extract_embeddings.py`;
-all preprocessing works without it.
+Requires Python 3.10+.
 
 ---
 
 ## Quick Start
 
-### Step 1 — Prepare raw data
-
-Place your WAV files in the correct directories:
-
-```
-data/raw/gunshot/        ← gunshot recordings
-data/raw/not_gunshot/    ← everything else (fireworks, door slams, etc.)
-```
-
-Files may be at any sample rate and any number of channels — preprocessing
-handles resampling and mono conversion automatically.
-
-### Step 2 — Audit data quality (optional but recommended)
-
-Run the audit before extraction to catch bad recordings early:
-
-```python
-from pipeline.preprocessing import audit_dataset
-
-report = audit_dataset("data/raw")
-print(f"Total files : {report['total_files']}")
-print(f"Too short   : {report['too_short']}")
-print(f"Too long    : {report['too_long']}")
-print(f"Silent      : {report['nearly_silent']}")
-print(f"Has NaN     : {report['has_nan']}")
-print(f"Unreadable  : {report['unreadable']}")
-```
-
-### Step 3 — Extract YAMNet embeddings
+### Step 1 — Extract YAMNet embeddings
 
 ```bash
+# Local
 python -m pipeline.extract_embeddings \
     --data_dir data/raw \
-    --output_dir data/processed/embeddings
+    --output_dir data/processed/embeddings \
+    --workers 8
+
+# Or on Modal T4 GPU (see Modal section below)
+modal run pipeline/modal_extract.py
 ```
 
-Downloads YAMNet from TensorFlow Hub on the first run (~17 MB, cached
-afterwards). Produces:
+Output in `data/processed/embeddings/`:
 
 | File | Shape | Description |
 |---|---|---|
-| `X_embeddings.npy` | `(N, 1024)` float32 | One embedding per clip |
+| `X_embeddings.npy` | `(N, 1024)` float32 | Mean-pooled YAMNet embeddings |
 | `y_labels.npy` | `(N,)` float32 | 1.0 = gunshot, 0.0 = not_gunshot |
-| `metadata.json` | — | Counts, skipped files, timestamp |
+| `zero_shot_scores.npy` | `(N,)` float32 | YAMNet class-427 score (zero-shot baseline) |
+| `yamnet_top_class_indices.npy` | `(N,)` int32 | Top AudioSet class index per clip |
+| `yamnet_top_class_scores.npy` | `(N,)` float32 | Confidence of top class |
+| `yamnet_top_class_names.npy` | `(N,)` str | Top class name |
+| `metadata.json` | — | Counts, skipped files, timestamp, full 521-class map |
 
-To re-run and overwrite existing outputs: add `--force`.
-
-### Step 4 — Split the dataset
+### Step 2 — Split dataset
 
 ```bash
 python -m pipeline.split_dataset \
@@ -143,109 +120,148 @@ python -m pipeline.split_dataset \
     --output_dir data/processed/splits
 ```
 
-Produces six `.npy` arrays plus `split_info.json` with exact indices and class
-distributions. Splits: **70% train / 15% val / 15% test**, stratified,
-`random_state=42`.
+Stratified 70/15/15 split, `random_state=42`.
+
+### Step 3 — Train head
+
+```bash
+# Default hyperparameters
+python -m training.train_head
+
+# Override class weight for higher recall
+python -m training.train_head --class_weight_gunshot 8.0 --threshold 0.35
+```
+
+Best weights saved to `models/saved_weights/dense_head_best.keras`.
+Per-run JSON saved to `experiments/runs/`.
+
+### Step 4 — Evaluate on test set
+
+```bash
+python -m training.evaluate_test --threshold 0.64
+```
+
+### Step 5 — Threshold sweep
+
+```bash
+python -m experiments.threshold_sweep
+```
+
+Saves 5 plots to `experiments/plots/threshold_sweep/`:
+- `precision_recall_vs_threshold.png`
+- `f1_vs_threshold.png`
+- `precision_recall_curve.png`
+- `roc_curve.png`
+- `metrics_table.png` (full TP/FP/FN/TN table, best F1 highlighted)
+
+### Step 6 — Live inference
+
+```bash
+# Default (threshold 0.64, log to inference/detections.jsonl)
+python -m inference.live_inference
+
+# With external webhook
+python -m inference.live_inference \
+    --threshold 0.64 \
+    --webhook_url https://your-app.com/api/gunshot-event
+```
+
+Press **Enter** or **Ctrl+C** to stop. Detections are appended to `inference/detections.jsonl`.
+
+---
+
+## Model Architecture
+
+```
+Input(1024)           ← YAMNet mean-pooled clip embedding
+  → Dense(256, relu)
+  → Dropout(0.3)
+  → Dense(1, sigmoid) → gunshot probability in [0, 1]
+```
+
+Training config (default):
+- Optimizer: Adam, lr=3e-4
+- Loss: binary crossentropy
+- Class weights: balanced (~4.2× for gunshot)
+- Early stopping: patience=10 on val_loss
+- Best run: epoch 12/100
+
+---
+
+## Live Inference Architecture
+
+```
+Microphone (16 kHz mono float32)
+  → sounddevice callback (8,000 samples = 0.5 s chunks)
+  → Ring buffer (32,000 samples = last 2 s)
+  → YAMNet → (1024,) embedding          ← one forward pass per chunk
+  → Dense head → gunshot probability
+  → if prob >= 0.64:
+      • console log (timestamp + probability)
+      • append to inference/detections.jsonl
+      • HTTP POST to webhook (if --webhook_url set)
+```
+
+Latency: ≤ 0.5 s from gunshot to detection.
+
+---
+
+## Modal Cloud GPU
+
+Run embedding extraction on a Modal T4 GPU instead of locally.
+
+```bash
+# One-time setup
+pip install modal
+modal token new
+modal volume create gunshot-data
+
+# Upload raw WAVs
+modal volume put gunshot-data data/raw/gunshot     gunshot
+modal volume put gunshot-data data/raw/not_gunshot not_gunshot
+
+# Run extraction
+modal run pipeline/modal_extract.py
+
+# Download results
+modal volume get gunshot-data embeddings data/processed/embeddings
+```
+
+> **Never commit actual token values.** Store credentials via `modal token new` or
+> environment variables — the config stores only the env var names.
 
 ---
 
 ## Data Contracts
 
-Each stage reads from and writes to known paths. Nothing in between.
-
-| Stage | Reads from | Writes to |
+| Stage | Reads | Writes |
 |---|---|---|
-| `preprocessing.py` | `data/raw/**/*.wav` | (in-memory only) |
 | `extract_embeddings.py` | `data/raw/gunshot/`, `data/raw/not_gunshot/` | `data/processed/embeddings/` |
+| `modal_extract.py` | Modal volume: `gunshot/`, `not_gunshot/` | Modal volume: `embeddings/` |
 | `split_dataset.py` | `data/processed/embeddings/` | `data/processed/splits/` |
-| **[FUTURE]** `train_head.py` | `data/processed/splits/` | `experiments/runs/`, `models/saved_weights/` |
-| **[FUTURE]** `live_inference.py` | `models/saved_weights/` | stdout / alert to Part B |
-
----
-
-## Running Tests
-
-```bash
-python -m pytest tests/ -v
-```
-
-The tests for `extract_embeddings.py` mock YAMNet so no network download is
-required. The tests for `preprocessing.py` and `split_dataset.py` are
-fully self-contained.
-
----
-
-## Pipeline Architecture
-
-```
-Raw WAV file (any SR, any channels)
-        │
-        ▼
-preprocess_clip()
-  1. librosa.load(sr=16000)     ← always resample
-  2. average channels → mono
-  3. cast to float32
-  4. warn if < 0.5 s
-  5. normalize to [-1, +1]
-  6. center-pad or center-trim → exactly 32000 samples
-        │
-        ▼  shape: (32000,) float32
-        │
-YAMNet (frozen, TF Hub)
-  Internal: mel spectrogram → MobileNetV1 backbone
-  Output:   per-frame embeddings (num_frames, 1024)
-        │
-        ▼
-tf.reduce_mean(axis=0)          ← mean-pool over time
-        │
-        ▼  shape: (1024,) float32
-        │
-[FUTURE] Classification Head
-  Dense: (1024,) → Dense(256) → Dense(128) → Dense(1, sigmoid)
-  OR
-  BiLSTM: (num_frames, 1024) → BiLSTM(128) → Dense(1, sigmoid)
-        │
-        ▼
-Binary label: 1 = gunshot, 0 = not_gunshot
-```
+| `train_head.py` | `data/processed/splits/` | `models/saved_weights/`, `experiments/runs/` |
+| `evaluate_test.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/runs/test_results.json` |
+| `threshold_sweep.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/plots/threshold_sweep/` |
+| `live_inference.py` | `models/saved_weights/` | `inference/detections.jsonl`, webhook |
 
 ---
 
 ## Notes on YAMNet
 
-- YAMNet requires: mono, 16 kHz, float32, values in `[-1.0, +1.0]`
-- YAMNet computes its own mel spectrogram internally — **do not** pass
-  spectrograms to YAMNet
-- YAMNet uses 0.96-second windows with 0.48-second hop; a 2-second clip
-  produces 3 embedding frames which are mean-pooled to 1
-- AudioSet class index **427** is "Gunshot, gunfire" — used by the zero-shot
-  baseline in `extract_zero_shot_score()`
+- Requires: mono, 16 kHz, float32, values in `[-1.0, +1.0]`
+- Computes its own mel spectrogram internally — do **not** pass spectrograms
+- 0.96-second windows, 0.48-second hop — a 2-second clip produces 3 frames, mean-pooled to (1024,)
+- AudioSet class index **421** = `"Gunshot, gunfire"` (confirmed from model's class map)
+- YAMNet outputs numbers, not strings — class names are resolved via `load_class_map()`
 
 ---
 
 ## Reproducibility
 
 - All random operations use `random_state=42`
-- `split_info.json` stores the exact original indices for each split — you
-  can reconstruct the exact same splits from any copy of `X_embeddings.npy`
-- `metadata.json` timestamps every extraction run
-- `configs/yamnet_pipeline.yaml` records all hyperparameters
-
----
-
-## Future Work
-
-These modules are stubbed and documented but not yet implemented:
-
-| File | Description |
-|---|---|
-| `models/head_dense.py` | Dense MLP head — fast, strong baseline |
-| `models/head_bilstm.py` | BiLSTM head — temporal modeling of per-frame embeddings |
-| `models/cascade/gate.py` | Class-427 score gate for two-stage cascade |
-| `training/train_head.py` | Head training script with early stopping and metric logging |
-| `inference/live_inference.py` | Real-time microphone inference, alert trigger to Part B |
-
-See each file for detailed design notes and references.
+- `split_info.json` stores exact original indices
+- `metadata.json` timestamps every extraction run and embeds the full 521-class map
+- `configs/yamnet_pipeline.yaml` is the single source of truth for pipeline hyperparameters
 
 ---
 

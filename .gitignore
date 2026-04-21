@@ -19,8 +19,7 @@ env/
 *.ipynb
 
 # Data — raw audio files are large; track only .gitkeep placeholders
-data/raw/gunshot/*.wav
-data/raw/not_gunshot/*.wav
+data/
 
 # Processed artifacts — generated, not version-controlled
 data/processed/embeddings/X_embeddings.npy
@@ -43,6 +42,10 @@ experiments/runs/*.csv
 # OS
 .DS_Store
 Thumbs.db
+
+# Modal — never commit credentials
+.modal.toml
+modal.toml
 
 # IDE
 .vscode/
