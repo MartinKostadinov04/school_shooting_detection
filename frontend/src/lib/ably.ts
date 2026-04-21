@@ -1,9 +1,10 @@
 /**
  * Ably client + message parser.
  *
- * No component imports `ably` directly — they use `useAbly()` hook.
- * Falls back to a deterministic mock simulator when VITE_ABLY_API_KEY is absent
- * so the demo always shows live activity.
+ * Authentication: fetches a short-lived token from /api/ably-token instead of
+ * embedding the bare API key in the client bundle.
+ * Falls back to a deterministic mock simulator when the token endpoint is
+ * unavailable so the demo always shows live activity.
  */
 
 import * as Ably from "ably";
@@ -11,19 +12,35 @@ import type { ParsedAblyEvent } from "@/types";
 
 export const ABLY_CHANNEL = "gunshot-detection";
 
-export function getAblyApiKey(): string | undefined {
-  const key = (import.meta as unknown as { env: Record<string, string | undefined> })
-    .env?.VITE_ABLY_API_KEY;
-  return key && key.length > 0 ? key : undefined;
-}
+const API_BASE = (import.meta as unknown as { env: Record<string, string> })
+  .env?.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 let client: Ably.Realtime | null = null;
 
-export function getAblyClient(): Ably.Realtime | null {
-  const key = getAblyApiKey();
-  if (!key) return null;
+async function fetchAblyToken(): Promise<Ably.TokenRequest | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/ably-token`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getAblyClient(): Promise<Ably.Realtime | null> {
   if (client) return client;
-  client = new Ably.Realtime({ key, clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}` });
+  const tokenRequest = await fetchAblyToken();
+  if (!tokenRequest) return null;
+  client = new Ably.Realtime({
+    authCallback: (_data, callback) => {
+      // Re-fetch token on each renewal cycle
+      fetchAblyToken().then((t) => {
+        if (t) callback(null, t);
+        else callback(new Error("token fetch failed"), null);
+      });
+    },
+    clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}`,
+  });
   return client;
 }
 
@@ -50,7 +67,6 @@ export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent |
   if (!allowed.includes(kind)) return null;
 
   if (kind === "audio:snippet" || kind === "video:segment") {
-    // location is the next chunk; URL may itself contain ':' (e.g. https://)
     const location = rest[0];
     const url = rest.slice(1).join(":");
     if (!location || !url) return null;

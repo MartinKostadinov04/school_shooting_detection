@@ -51,3 +51,13 @@ modal.toml
 .vscode/
 .idea/
 *.swp
+
+# Frontend
+frontend/node_modules/
+frontend/.env.local
+frontend/dist/
+frontend/.output/
+
+# API / DB
+data/tacticaleye.db
+.env

@@ -31,7 +31,26 @@ Trained on **24,144 clips** (4,621 gunshot / 19,523 not_gunshot). Test set: 3,62
 .
 ├── README.md
 ├── requirements.txt
+├── .env.example                        ← copy to .env, fill in secrets
 ├── wav_info.py                         ← WAV file inspector utility
+│
+├── frontend/                           ← React dashboard (TanStack Start + shadcn/ui)
+│   └── src/
+│       ├── hooks/useAuth.ts            ← auth → POST /api/auth/login
+│       ├── lib/ably.ts                 ← Ably client → GET /api/ably-token
+│       └── lib/incidentStore.ts        ← Zustand store, API-backed
+│
+├── api/                                ← FastAPI backend
+│   ├── main.py                         ← app, CORS, router mount, lifespan seed
+│   ├── database.py                     ← SQLAlchemy engine + session
+│   ├── models.py                       ← ORM: users, devices, incidents, messages
+│   ├── schemas.py                      ← Pydantic request/response models
+│   └── routes/
+│       ├── auth.py                     ← POST /api/auth/login, GET /api/auth/me
+│       ├── devices.py                  ← GET/PATCH /api/schools/{id}/devices
+│       ├── incidents.py                ← CRUD /api/incidents
+│       ├── messages.py                 ← GET/POST /api/incidents/{id}/messages
+│       └── ably_token.py              ← GET /api/ably-token
 │
 ├── configs/
 │   ├── yamnet_pipeline.yaml            ← pipeline + Modal config (single source of truth)
@@ -68,6 +87,10 @@ Trained on **24,144 clips** (4,621 gunshot / 19,523 not_gunshot). Test set: 3,62
 │   └── plots/
 │       └── threshold_sweep/           ← PR curve, ROC, F1 vs threshold, metrics table
 │
+├── scripts/
+│   ├── dev.sh                         ← start API + frontend + audio (Linux/Mac)
+│   └── dev.ps1                        ← start API + frontend + audio (Windows)
+│
 └── tests/
     ├── test_extract_embeddings.py
     └── test_yamnet_integration.py
@@ -81,7 +104,50 @@ Trained on **24,144 clips** (4,621 gunshot / 19,523 not_gunshot). Test set: 3,62
 pip install -r requirements.txt
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+ and Node.js 18+.
+
+---
+
+## Full-Stack Quick Start
+
+### One command (after setting up `.env`)
+
+```bash
+# Linux / Mac
+cp .env.example .env   # fill in ABLY_API_KEY, JWT_SECRET
+bash scripts/dev.sh
+
+# Windows (PowerShell)
+Copy-Item .env.example .env   # fill in secrets
+.\scripts\dev.ps1
+```
+
+This starts:
+1. **FastAPI backend** at `http://localhost:8000` — auto-creates SQLite DB and seeds demo data
+2. **React dashboard** at `http://localhost:5173` — school and police views
+3. **Audio inference** — microphone listener publishing to Ably channel `gunshot-detection`
+
+### Manual startup
+
+```bash
+# 1. Backend
+uvicorn api.main:app --reload --port 8000
+
+# 2. Frontend
+cd frontend && npm install && npm run dev
+
+# 3. Audio pipeline
+python -m inference.live_inference --location "Main Entrance"
+```
+
+### Demo credentials
+
+| Role | Email | Password |
+|---|---|---|
+| School Operator | school@demo.com | school123 |
+| Dispatch Officer | police@demo.com | police123 |
+
+---
 
 ---
 

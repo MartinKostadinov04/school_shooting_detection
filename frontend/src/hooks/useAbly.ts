@@ -27,7 +27,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { useEffect, useRef } from "react";
-import { ABLY_CHANNEL, getAblyApiKey, getAblyClient, parseAblyMessage } from "@/lib/ably";
+import { ABLY_CHANNEL, getAblyClient, parseAblyMessage } from "@/lib/ably";
 import { useStore } from "@/lib/incidentStore";
 import type { ParsedAblyEvent } from "@/types";
 
@@ -41,7 +41,6 @@ export function useAbly() {
     if (evt.kind === "audio:detected") {
       ingestDetection({ location: evt.location, source: "AUDIO-AI" });
     } else if (evt.kind === "video:detected") {
-      // If matching incident exists, mark video confirmed; else create one.
       const existing = useStore
         .getState()
         .incidents.find((i) => i.location === evt.location && i.status !== "RESOLVED");
@@ -55,41 +54,46 @@ export function useAbly() {
   });
 
   useEffect(() => {
-    const apiKey = getAblyApiKey();
-
-    if (!apiKey) {
-      // No key configured. We deliberately do NOT simulate events here.
-      // The dispatch / school UI will simply show "OFFLINE" until the
-      // detection backend is wired up (see TRANSFER NOTES at top of file).
-      setConnection("disconnected");
-      return;
-    }
-
+    let cancelled = false;
     setConnection("connecting");
-    const client = getAblyClient();
-    if (!client) {
-      setConnection("disconnected");
-      return;
-    }
-    const channel = client.channels.get(ABLY_CHANNEL);
 
-    const onConnected = () => setConnection("connected");
-    const onDisconnected = () => setConnection("disconnected");
-    client.connection.on("connected", onConnected);
-    client.connection.on("disconnected", onDisconnected);
-    client.connection.on("failed", onDisconnected);
+    getAblyClient().then((client) => {
+      if (cancelled) return;
+      if (!client) {
+        setConnection("disconnected");
+        return;
+      }
+      const channel = client.channels.get(ABLY_CHANNEL);
 
-    const onMessage = (msg: { name?: string; data?: unknown }) => {
-      const parsed = parseAblyMessage(msg.name ?? "", msg.data);
-      if (parsed) handlerRef.current(parsed);
-    };
-    channel.subscribe(onMessage);
+      const onConnected    = () => setConnection("connected");
+      const onDisconnected = () => setConnection("disconnected");
+      client.connection.on("connected",    onConnected);
+      client.connection.on("disconnected", onDisconnected);
+      client.connection.on("failed",       onDisconnected);
+
+      const onMessage = (msg: { name?: string; data?: unknown }) => {
+        const parsed = parseAblyMessage(msg.name ?? "", msg.data);
+        if (parsed) handlerRef.current(parsed);
+      };
+      channel.subscribe(onMessage);
+
+      // Cleanup stored on the closure so the returned teardown can reach it
+      (client as unknown as { _teCleanup?: () => void })._teCleanup = () => {
+        channel.unsubscribe(onMessage);
+        client.connection.off("connected",    onConnected);
+        client.connection.off("disconnected", onDisconnected);
+        client.connection.off("failed",       onDisconnected);
+      };
+    });
 
     return () => {
-      channel.unsubscribe(onMessage);
-      client.connection.off("connected", onConnected);
-      client.connection.off("disconnected", onDisconnected);
-      client.connection.off("failed", onDisconnected);
+      cancelled = true;
+      // Best-effort cleanup — client may not be ready yet on fast unmounts
+      getAblyClient().then((client) => {
+        if (client) {
+          (client as unknown as { _teCleanup?: () => void })._teCleanup?.();
+        }
+      });
     };
   }, [setConnection]);
 }
