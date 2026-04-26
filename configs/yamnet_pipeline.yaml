@@ -15,8 +15,12 @@ min_clip_samples: 8000          # samples = 0.5 seconds — below this, warn and
 # Data quality thresholds
 silence_threshold: 1.0e-6       # max abs amplitude below which clip is "nearly silent"
 
-# AudioSet class index for zero-shot baseline
-gunshot_audioset_class_idx: 427  # "Gunshot, gunfire" in AudioSet ontology
+# AudioSet class index for zero-shot baseline.
+# NOTE: The actual index is resolved dynamically at runtime via
+# resolve_gunshot_class_idx() in pipeline/extract_embeddings.py — this value
+# is informational only. The bundled class map places "Gunshot, gunfire" at
+# index 421, not 427 as some external references claim.
+gunshot_audioset_class_idx: 421  # "Gunshot, gunfire" in AudioSet ontology
 
 # Paths (relative to project root)
 data:

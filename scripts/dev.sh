@@ -25,13 +25,18 @@ echo "Starting audio inference pipeline ..."
 python -m inference.live_inference --location "Main Entrance" &
 AUDIO_PID=$!
 
+echo "Starting vision inference pipeline ..."
+python -m vision.live_inference --location "Main Entrance" &
+VISION_PID=$!
+
 echo ""
 echo "Services running:"
 echo "  API      → http://localhost:8000  (PID $API_PID)"
 echo "  Frontend → http://localhost:5173  (PID $FRONTEND_PID)"
 echo "  Audio    → background             (PID $AUDIO_PID)"
+echo "  Vision   → background             (PID $VISION_PID)"
 echo ""
 echo "Press Ctrl+C to stop all services."
 
-trap "kill $API_PID $FRONTEND_PID $AUDIO_PID 2>/dev/null; exit" SIGINT SIGTERM
+trap "kill $API_PID $FRONTEND_PID $AUDIO_PID $VISION_PID 2>/dev/null; exit" SIGINT SIGTERM
 wait

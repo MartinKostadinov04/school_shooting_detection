@@ -235,6 +235,7 @@ class VideoCapture:
         s3_bucket:   "str | None",
         aws_region:  str,
         source:      "int | str",
+        show:        bool = False,
     ):
         from ultralytics import YOLO
         logger.info("Loading YOLO model from %s ...", model_path)
@@ -248,6 +249,7 @@ class VideoCapture:
         self._s3_bucket       = s3_bucket
         self._aws_region      = aws_region
         self._source          = source
+        self._show            = show
         self._cap             = None
         self._last_alert_time = 0.0
         self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
@@ -267,8 +269,8 @@ class VideoCapture:
         max_conf  = float(boxes.conf.max()) if len(boxes) > 0 else 0.0
         return max_conf, annotated
 
-    def _process_frame(self, frame: np.ndarray) -> float:
-        """Run inference and fire a throttled alert on detection."""
+    def _process_frame(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
+        """Run inference and fire a throttled alert on detection. Returns (conf, annotated)."""
         max_conf, annotated = self._run_inference(frame)
         logger.debug("conf=%.4f", max_conf)
 
@@ -289,7 +291,7 @@ class VideoCapture:
                     aws_region=self._aws_region,
                     executor=self._s3_executor,
                 )
-        return max_conf
+        return max_conf, annotated
 
     def start(self) -> None:
         """Open the video source and process frames until stopped or source ends."""
@@ -301,7 +303,10 @@ class VideoCapture:
             "Capturing  source=%s  threshold=%.2f  iou=%.2f  imgsz=%d  location=%s",
             self._source, self._threshold, self._iou, self._imgsz, self._location,
         )
-        print("\nPress Ctrl+C to stop ...\n")
+        if self._show:
+            print("\nPress 'q' in the video window (or Ctrl+C in terminal) to stop ...\n")
+        else:
+            print("\nPress Ctrl+C to stop ...\n")
 
         try:
             while True:
@@ -309,8 +314,13 @@ class VideoCapture:
                 if not ok:
                     logger.info("Video source ended.")
                     break
-                conf = self._process_frame(frame)
+                conf, annotated = self._process_frame(frame)
                 print(f"  conf={conf:.4f}", end="\r")
+                if self._show:
+                    cv2.imshow("Vision — gun detection", annotated)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        print("\nStopped.")
+                        break
         except KeyboardInterrupt:
             print("\nStopped.")
         finally:
@@ -320,6 +330,8 @@ class VideoCapture:
         if self._cap:
             self._cap.release()
             self._cap = None
+        if self._show:
+            cv2.destroyAllWindows()
         self._s3_executor.shutdown(wait=False)
 
     def run_demo_file(self, file_path: Path) -> None:
@@ -357,6 +369,8 @@ def main() -> None:
                         help="S3 bucket for annotated frame upload. Omit to skip.")
     parser.add_argument("--aws_region", type=str,   default="us-east-1",
                         help="AWS region for S3 (default: us-east-1)")
+    parser.add_argument("--show",       action="store_true",
+                        help="Open a window showing the annotated video feed (press 'q' to stop).")
     args = parser.parse_args()
 
     # Coerce --source to int when it looks like a device index
@@ -389,6 +403,7 @@ def main() -> None:
         s3_bucket=args.s3_bucket,
         aws_region=args.aws_region,
         source=source,
+        show=args.show,
     )
 
     try:

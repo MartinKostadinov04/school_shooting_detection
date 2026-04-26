@@ -414,39 +414,6 @@ def extract_zero_shot_score(
     return float(tf.reduce_mean(gunshot_scores).numpy())
 
 
-def extract_yamnet_classification(
-    audio: np.ndarray,
-    yamnet_model: object,
-) -> Tuple[int, float]:
-    """
-    Return YAMNet's top predicted AudioSet class for a clip.
-
-    Averages scores across all frames and returns the class with the
-    highest mean score, along with its confidence value.
-
-    Parameters
-    ----------
-    audio : np.ndarray
-        Shape ``(32000,)``, dtype ``float32``, values in ``[-1.0, +1.0]``.
-    yamnet_model : TF-Hub SavedModel
-        Loaded YAMNet model returned by ``load_yamnet()``.
-
-    Returns
-    -------
-    top_class_idx : int
-        AudioSet class index (0–520) with the highest mean score.
-    top_class_score : float
-        Confidence of that class, in ``[0.0, 1.0]``.
-    """
-    waveform = tf.constant(audio, dtype=tf.float32)
-    scores, _, _ = yamnet_model(waveform)
-    # Mean over frames → (521,)
-    mean_scores = tf.reduce_mean(scores, axis=0).numpy()
-    top_class_idx = int(np.argmax(mean_scores))
-    top_class_score = float(mean_scores[top_class_idx])
-    return top_class_idx, top_class_score
-
-
 # ---------------------------------------------------------------------------
 # Core extraction logic
 # ---------------------------------------------------------------------------

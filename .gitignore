@@ -18,17 +18,10 @@ env/
 .ipynb_checkpoints/
 *.ipynb
 
-# Data — raw audio files are large; track only .gitkeep placeholders
+# Data — raw audio files, processed embeddings, splits, SQLite DB
 data/
 
-# Processed artifacts — generated, not version-controlled
-data/processed/embeddings/X_embeddings.npy
-data/processed/embeddings/y_labels.npy
-data/processed/embeddings/metadata.json
-data/processed/splits/*.npy
-data/processed/splits/split_info.json
-
-# Trained model weights
+# Trained model weights (the committed best checkpoint is force-added)
 models/saved_weights/
 
 # Experiment run logs
@@ -58,6 +51,5 @@ frontend/.env.local
 frontend/dist/
 frontend/.output/
 
-# API / DB
-data/tacticaleye.db
+# Secrets
 .env
