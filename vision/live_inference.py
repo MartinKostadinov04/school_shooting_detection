@@ -5,16 +5,16 @@ Real-time gun detection from a camera or video file using a fine-tuned YOLOv11s 
 
 Pipeline per frame:
   camera / video file (BGR frame via OpenCV)
-    → YOLO model → confidence scores
-    → if max_conf >= threshold:
-        • console log
-        • JSONL log file
-        • Ably WS  →  "video:detected:{location}"
-        • (optional) annotated frame  →  S3  →  "video:segment:{location}:{presigned_url}"
+    -> YOLO model -> confidence scores
+    -> if detection and cooldown elapsed:
+        * console log
+        * JSONL log file
+        * Ably WS  ->  "video:detected:{location}"
+        * (optional) annotated frame  ->  S3  ->  "video:segment:{location}:{presigned_url}"
 
 Ably credentials: set ABLY_API_KEY env var (or pass --ably_key).
 AWS credentials:  set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
-                  (standard boto3 env vars — never hardcode).
+                  (standard boto3 env vars -- never hardcode).
 
 Usage
 -----
@@ -37,8 +37,11 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,20 +59,22 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL_PATH = Path("YOLO_hugging-main/best.pt")
-DEFAULT_LOG_FILE   = Path("vision/detections.jsonl")
-DEFAULT_THRESHOLD  = 0.6
-DEFAULT_IOU        = 0.45
-DEFAULT_IMG_SIZE   = 1280
-DEFAULT_CHANNEL    = "gunshot-detection"
-DEFAULT_LOCATION   = "unknown"
-S3_PRESIGN_EXPIRY  = 3600    # seconds
+DEFAULT_MODEL_PATH  = Path("YOLO_hugging-main/best.pt")
+DEFAULT_LOG_FILE    = Path("vision/detections.jsonl")
+DEFAULT_THRESHOLD   = 0.6
+DEFAULT_IOU         = 0.45
+DEFAULT_IMG_SIZE    = 1280
+DEFAULT_CHANNEL     = "gunshot-detection"
+DEFAULT_LOCATION    = "unknown"
+S3_PRESIGN_EXPIRY   = 3600   # seconds
+ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
+S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
 
 
 # ---------------------------------------------------------------------------
 # Async Ably publisher
 # ---------------------------------------------------------------------------
-# cv2 capture loops run in the main thread — AblyPublisher bridges to its own
+# cv2 capture loops run in the main thread -- AblyPublisher bridges to its own
 # asyncio loop via run_coroutine_threadsafe(), identical pattern to audio component.
 
 class AblyPublisher:
@@ -102,7 +107,7 @@ class AblyPublisher:
         self._client  = AblyRealtime(self._api_key)
         await self._client.connection.once_async("connected")
         self._channel = self._client.channels.get(self._channel_name)
-        logger.info("Ably connected  →  channel='%s'", self._channel_name)
+        logger.info("Ably connected  ->  channel='%s'", self._channel_name)
         self._ready.set()
 
     def publish(self, name: str, data: str):
@@ -113,10 +118,14 @@ class AblyPublisher:
 
     def close(self):
         if self._client:
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._client.close(),
                 self._loop,
             )
+            try:
+                future.result(timeout=3)
+            except Exception as exc:
+                logger.warning("Ably close error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +144,7 @@ def _s3_upload_frame(frame: np.ndarray, location: str, timestamp: str,
                      bucket: str, region: str) -> str:
     import boto3
     jpeg_bytes = _frame_to_jpeg_bytes(frame)
-    safe_loc   = location.replace("/", "_")
+    safe_loc   = re.sub(r"[^\w-]", "_", location)
     key        = f"video-snapshots/{safe_loc}/{timestamp}.jpg"
 
     s3 = boto3.client("s3", region_name=region)
@@ -147,7 +156,7 @@ def _s3_upload_frame(frame: np.ndarray, location: str, timestamp: str,
         Params={"Bucket": bucket, "Key": key},
         ExpiresIn=S3_PRESIGN_EXPIRY,
     )
-    logger.info("Frame uploaded  →  s3://%s/%s", bucket, key)
+    logger.info("Frame uploaded  ->  s3://%s/%s", bucket, key)
     return url
 
 
@@ -165,6 +174,7 @@ def _alert(
     publisher:  "AblyPublisher | None",
     s3_bucket:  "str | None",
     aws_region: str,
+    executor:   ThreadPoolExecutor,
 ) -> None:
     record = {
         "event":       "gun_detected",
@@ -175,7 +185,7 @@ def _alert(
     }
 
     # Console
-    print(f"\n🔴  GUN DETECTED  conf={conf:.3f}  loc={location}  [{timestamp}]")
+    print(f"\n\U0001f534  GUN DETECTED  conf={conf:.3f}  loc={location}  [{timestamp}]")
 
     # JSONL log
     try:
@@ -190,19 +200,22 @@ def _alert(
 
     # Ably: detection message
     publisher.publish("video:detected", f"video:detected:{location}")
-    logger.info("Ably  →  video:detected:%s", location)
+    logger.info("Ably  ->  video:detected:%s", location)
 
-    # Ably: frame snapshot (upload async so we don't block the capture loop)
+    # Ably: frame snapshot -- submitted to bounded thread pool so the capture
+    # loop is never blocked and thread count stays capped under rapid detection.
     if s3_bucket:
+        snapshot = frame.copy()
+
         def _upload_and_publish():
             try:
-                url = _s3_upload_frame(frame.copy(), location, timestamp, s3_bucket, aws_region)
+                url = _s3_upload_frame(snapshot, location, timestamp, s3_bucket, aws_region)
                 publisher.publish("video:segment", f"video:segment:{location}:{url}")
-                logger.info("Ably  →  video:segment:%s:<url>", location)
+                logger.info("Ably  ->  video:segment:%s:<url>", location)
             except Exception as exc:
                 logger.warning("S3 upload failed: %s", exc)
 
-        threading.Thread(target=_upload_and_publish, daemon=True).start()
+        executor.submit(_upload_and_publish)
 
 
 # ---------------------------------------------------------------------------
@@ -225,17 +238,19 @@ class VideoCapture:
     ):
         from ultralytics import YOLO
         logger.info("Loading YOLO model from %s ...", model_path)
-        self._model     = YOLO(str(model_path))
-        self._threshold = threshold
-        self._iou       = iou
-        self._imgsz     = imgsz
-        self._location  = location
-        self._log_file  = log_file
-        self._publisher = publisher
-        self._s3_bucket = s3_bucket
-        self._aws_region = aws_region
-        self._source    = source
-        self._cap       = None
+        self._model           = YOLO(str(model_path))
+        self._threshold       = threshold
+        self._iou             = iou
+        self._imgsz           = imgsz
+        self._location        = location
+        self._log_file        = log_file
+        self._publisher       = publisher
+        self._s3_bucket       = s3_bucket
+        self._aws_region      = aws_region
+        self._source          = source
+        self._cap             = None
+        self._last_alert_time = 0.0
+        self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
 
     def _run_inference(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
         """Run YOLO on a single frame. Returns (max_confidence, annotated_frame)."""
@@ -246,38 +261,41 @@ class VideoCapture:
             imgsz=self._imgsz,
             verbose=False,
         )
-        result = results[0]
+        result    = results[0]
         annotated = result.plot()  # BGR frame with bounding boxes drawn
-        boxes = result.boxes
-        max_conf = float(boxes.conf.max()) if len(boxes) > 0 else 0.0
+        boxes     = result.boxes
+        max_conf  = float(boxes.conf.max()) if len(boxes) > 0 else 0.0
         return max_conf, annotated
 
     def _process_frame(self, frame: np.ndarray) -> float:
-        """Run inference and fire alert if a gun is detected. Returns max confidence."""
+        """Run inference and fire a throttled alert on detection."""
         max_conf, annotated = self._run_inference(frame)
         logger.debug("conf=%.4f", max_conf)
 
-        if max_conf >= self._threshold:
-            ts = datetime.now(timezone.utc).isoformat()
-            _alert(
-                conf=max_conf,
-                frame=annotated,
-                timestamp=ts,
-                threshold=self._threshold,
-                location=self._location,
-                log_file=self._log_file,
-                publisher=self._publisher,
-                s3_bucket=self._s3_bucket,
-                aws_region=self._aws_region,
-            )
+        if max_conf > 0.0:
+            now = time.monotonic()
+            if now - self._last_alert_time >= ALERT_COOLDOWN_SECS:
+                self._last_alert_time = now
+                ts = datetime.now(timezone.utc).isoformat()
+                _alert(
+                    conf=max_conf,
+                    frame=annotated,
+                    timestamp=ts,
+                    threshold=self._threshold,
+                    location=self._location,
+                    log_file=self._log_file,
+                    publisher=self._publisher,
+                    s3_bucket=self._s3_bucket,
+                    aws_region=self._aws_region,
+                    executor=self._s3_executor,
+                )
         return max_conf
 
     def start(self) -> None:
         """Open the video source and process frames until stopped or source ends."""
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
-            logger.error("Cannot open video source: %s", self._source)
-            sys.exit(1)
+            raise RuntimeError(f"Cannot open video source: {self._source}")
 
         logger.info(
             "Capturing  source=%s  threshold=%.2f  iou=%.2f  imgsz=%d  location=%s",
@@ -301,6 +319,8 @@ class VideoCapture:
     def stop(self) -> None:
         if self._cap:
             self._cap.release()
+            self._cap = None
+        self._s3_executor.shutdown(wait=False)
 
     def run_demo_file(self, file_path: Path) -> None:
         """Process a video file frame-by-frame (no webcam required)."""
@@ -354,9 +374,9 @@ def main() -> None:
         try:
             publisher = AblyPublisher(ably_key, args.channel)
         except Exception as exc:
-            logger.warning("Ably connection failed: %s — running without WS alerts", exc)
+            logger.warning("Ably connection failed: %s -- running without WS alerts", exc)
     else:
-        logger.warning("No Ably key provided (--ably_key / ABLY_API_KEY) — WS alerts disabled")
+        logger.warning("No Ably key provided (--ably_key / ABLY_API_KEY) -- WS alerts disabled")
 
     capture = VideoCapture(
         model_path=args.model_path,
@@ -373,6 +393,9 @@ def main() -> None:
 
     try:
         capture.start()
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
     finally:
         if publisher:
             publisher.close()
