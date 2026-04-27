@@ -47,13 +47,16 @@ Common flags
 """
 
 import argparse
+import http.server
 import json
 import logging
 import os
 import queue
+import socket
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,6 +94,70 @@ VIDEO_DEFAULT_IMGSZ  = 1280
 
 
 # ---------------------------------------------------------------------------
+# Local file server — serves audio/video files to the browser for playback
+# ---------------------------------------------------------------------------
+
+class _LocalFileServer:
+    """
+    Minimal HTTP server that serves arbitrary local files by absolute path.
+    URL format: http://localhost:{port}/file?path=<url-encoded-absolute-path>
+
+    Started once when cascade.py launches; all file references use the same port.
+    CORS header is added so the React frontend (on a different port) can fetch.
+    """
+
+    def __init__(self, port: int = 0):
+        self._port   = port
+        self._server = None
+        self._thread = None
+
+    def start(self) -> int:
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                paths  = params.get("path", [])
+                if not paths:
+                    self.send_error(400, "Missing ?path= parameter")
+                    return
+                file_path = Path(urllib.parse.unquote(paths[0]))
+                if not file_path.exists() or not file_path.is_file():
+                    self.send_error(404, f"File not found: {file_path}")
+                    return
+                suffix = file_path.suffix.lower()
+                mime   = {
+                    ".wav": "audio/wav", ".mp3": "audio/mpeg",
+                    ".mp4": "video/mp4", ".webm": "video/webm",
+                    ".avi": "video/x-msvideo", ".mov": "video/quicktime",
+                }.get(suffix, "application/octet-stream")
+                data = file_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_):
+                pass   # suppress access logs
+
+        self._server = http.server.HTTPServer(("localhost", self._port), _Handler)
+        self._port   = self._server.server_address[1]   # actual port if 0 was requested
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        logger.info("Local file server started on http://localhost:%d", self._port)
+        return self._port
+
+    def url_for(self, file_path: Path) -> str:
+        encoded = urllib.parse.quote(str(file_path.resolve()))
+        return f"http://localhost:{self._port}/file?path={encoded}"
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # Core pipeline helpers
 # ---------------------------------------------------------------------------
 
@@ -107,14 +174,24 @@ def infer_audio_file(
     threshold: float,
     publisher: "AblyPublisher | None",
     log_file: Path,
+    file_server: "_LocalFileServer | None" = None,
 ) -> tuple[bool, float]:
     """
     Process an audio file through the sliding-window pipeline.
     Returns (detected, max_prob).
     Publishes audio:detected on the first threshold crossing (5 s cooldown).
+    Publishes audio:snippet with a localhost URL so the police page can play it.
     """
-    import librosa
-    audio, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
+    import soundfile as sf
+    import scipy.signal as ss
+
+    raw, orig_sr = sf.read(str(path), dtype="float32", always_2d=False)
+    if raw.ndim == 2:
+        raw = raw.mean(axis=1)
+    if orig_sr != SAMPLE_RATE:
+        n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
+        raw = ss.resample(raw, n_samples).astype("float32")
+    audio = raw
     n_chunks  = len(audio) // CHUNK_SAMPLES
     chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
 
@@ -150,6 +227,11 @@ def infer_audio_file(
             if publisher:
                 publisher.publish("audio:detected", f"audio:detected:{location}:{prob:.4f}")
                 logger.info("Ably  →  audio:detected:%s  prob=%.4f", location, prob)
+                # Serve the source file locally so the police page can play it
+                if file_server:
+                    snippet_url = file_server.url_for(path)
+                    publisher.publish("audio:snippet", f"audio:snippet:{location}:{snippet_url}")
+                    logger.info("Ably  →  audio:snippet:%s  url=%s", location, snippet_url)
 
             try:
                 log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -185,6 +267,7 @@ def infer_video_file(
     s3_bucket: "str | None",
     aws_region: str,
     show: bool,
+    file_server: "_LocalFileServer | None" = None,
 ) -> tuple[bool, float]:
     """
     Process a video file through YOLO.
@@ -210,6 +293,11 @@ def infer_video_file(
     if detected:
         print(f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  loc={location}")
         print(f"  → Police alert WITH visual reference\n")
+        # Serve the video file locally so the police page can play it
+        if file_server and publisher:
+            segment_url = file_server.url_for(path)
+            publisher.publish("video:segment", f"video:segment:{location}:{segment_url}")
+            logger.info("Ably  →  video:segment:%s  url=%s", location, segment_url)
     else:
         print(f"\n  ■  No gun detected  (max_conf={max_conf:.3f})\n")
     return detected, max_conf
@@ -237,6 +325,7 @@ def prompt_and_run_video(
     s3_bucket: "str | None",
     aws_region: str,
     show: bool,
+    file_server: "_LocalFileServer | None" = None,
 ) -> None:
     try:
         path_str = input("  Video path for visual confirmation (Enter to skip): ").strip()
@@ -266,6 +355,7 @@ def prompt_and_run_video(
         s3_bucket=s3_bucket,
         aws_region=aws_region,
         show=show,
+        file_server=file_server,
     )
     if not detected:
         publish_video_negative(location, publisher)
@@ -317,6 +407,10 @@ def main() -> None:
     else:
         logger.warning("No Ably key — WS alerts disabled (set --ably_key or ABLY_API_KEY)")
 
+    # Local file server — serves audio/video files to the browser for playback
+    file_server = _LocalFileServer()
+    file_server.start()
+
     # Shared kwargs forwarded to every video stage call
     video_kwargs = dict(
         video_model=args.video_model,
@@ -328,6 +422,7 @@ def main() -> None:
         s3_bucket=args.s3_bucket,
         aws_region=args.aws_region,
         show=args.show,
+        file_server=file_server,
     )
 
     logger.info("Loading YAMNet ...")
@@ -413,6 +508,7 @@ def main() -> None:
                     threshold=args.audio_threshold,
                     publisher=publisher,
                     log_file=args.log_file,
+                    file_server=file_server,
                 )
 
                 if detected:
@@ -425,6 +521,7 @@ def main() -> None:
 
     if publisher:
         publisher.close()
+    file_server.stop()
     logger.info("Done.")
 
 
