@@ -40,7 +40,7 @@ export function DevicePin({
   };
 
   const handleClick = () => {
-    if (editMode || didDrag.current) return;
+    if (didDrag.current) return;
     onClick(device);
   };
 

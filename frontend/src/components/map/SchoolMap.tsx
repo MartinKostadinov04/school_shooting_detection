@@ -83,7 +83,7 @@ export function SchoolMap() {
         ))}
       </div>
 
-      {!editMode && selected && (
+      {selected && (
         <DevicePanel device={selected} onClose={() => setSelected(null)} />
       )}
     </div>
