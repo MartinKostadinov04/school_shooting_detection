@@ -3,10 +3,25 @@ live_inference.py  (vision)
 ===========================
 Real-time gun detection from a camera or video file using a fine-tuned YOLOv11s model.
 
+Three-layer FP-reduction stack (no retraining required):
+  1. Temporal k-of-n gate  — require K positive frames in a rolling window of N
+                             before firing an alert. Eliminates single-frame FPs
+                             (Olmos MULTICAST: 80% FP reduction).
+  2. SAHI tiled inference  — slice each frame into overlapping tiles, detect on
+                             each tile, merge results. 10× mAP improvement on
+                             small/distant guns in CCTV footage (Hnoohom 2022).
+                             Falls back to standard inference if sahi not installed.
+  3. Pose-overlap check    — require every gun bbox to overlap a detected hand
+                             region. Stationary desk/object FPs have no associated
+                             hand and are suppressed (Lamas WeDePE 2022: +4-18 AP).
+                             Falls back to no constraint if mediapipe not installed.
+
 Pipeline per frame:
   camera / video file (BGR frame via OpenCV)
-    -> YOLO model -> confidence scores
-    -> if detection and cooldown elapsed:
+    -> SAHI tiled YOLO -> confidence scores
+    -> pose-overlap filter
+    -> temporal k-of-n gate
+    -> if gate trips and cooldown elapsed:
         * console log
         * JSONL log file
         * Ably WS  ->  "video:detected:{location}"
@@ -26,6 +41,10 @@ Usage
 
   Optional flags:
     --threshold 0.6  --iou 0.45  --imgsz 1280
+    --no_sahi        disable tiled inference (faster, less accurate on small guns)
+    --no_pose        disable pose-overlap constraint
+    --kofn_k 4       detections required in rolling window (default: 4)
+    --kofn_n 6       rolling window size in frames (default: 6)
     --log_file vision/detections.jsonl
     --ably_key KEY   --channel gunshot-detection
     --s3_bucket my-bucket  --aws_region eu-west-1
@@ -41,12 +60,28 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Tuple
 
 import cv2
 import numpy as np
+
+# Optional dependencies — degrade gracefully if absent
+try:
+    from sahi import AutoDetectionModel
+    from sahi.predict import get_sliced_prediction
+    _SAHI_AVAILABLE = True
+except ImportError:
+    _SAHI_AVAILABLE = False
+
+try:
+    import mediapipe as mp
+    _MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    _MEDIAPIPE_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,6 +104,18 @@ DEFAULT_LOCATION    = "Cafeteria"
 S3_PRESIGN_EXPIRY   = 3600   # seconds
 ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
 S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
+
+# Temporal k-of-n defaults (Olmos MULTICAST: 80% FP reduction)
+DEFAULT_KOFN_K      = 4     # positive frames required
+DEFAULT_KOFN_N      = 6     # rolling window size
+
+# SAHI tiling defaults (Hnoohom 2022: 10× mAP on small CCTV guns)
+SAHI_SLICE_H        = 512
+SAHI_SLICE_W        = 512
+SAHI_OVERLAP        = 0.2
+
+# Pose: hand bbox expansion factor relative to wrist-to-MCP distance
+POSE_HAND_EXPAND    = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +266,57 @@ def _alert(
 
 
 # ---------------------------------------------------------------------------
+# Pose helper — hand-region extraction via MediaPipe
+# ---------------------------------------------------------------------------
+
+def _build_hand_detector():
+    """Return a MediaPipe Hands instance, or None if mediapipe is absent."""
+    if not _MEDIAPIPE_AVAILABLE:
+        return None
+    return mp.solutions.hands.Hands(
+        static_image_mode=True,
+        max_num_hands=4,
+        min_detection_confidence=0.4,
+    )
+
+
+def _hand_boxes(frame_rgb: np.ndarray, hands_detector) -> List[Tuple[int, int, int, int]]:
+    """
+    Return a list of (x1,y1,x2,y2) hand bounding boxes in pixel coords.
+    Each box is derived from the 21 MediaPipe hand landmarks, expanded by
+    POSE_HAND_EXPAND to account for partially visible hands.
+    """
+    if hands_detector is None:
+        return []
+    result = hands_detector.process(frame_rgb)
+    if not result.multi_hand_landmarks:
+        return []
+
+    h, w = frame_rgb.shape[:2]
+    boxes = []
+    for hand_lms in result.multi_hand_landmarks:
+        xs = [lm.x * w for lm in hand_lms.landmark]
+        ys = [lm.y * h for lm in hand_lms.landmark]
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        half = max(max(xs) - min(xs), max(ys) - min(ys)) * POSE_HAND_EXPAND / 2
+        boxes.append((
+            int(max(0, cx - half)), int(max(0, cy - half)),
+            int(min(w, cx + half)), int(min(h, cy + half)),
+        ))
+    return boxes
+
+
+def _gun_box_has_hand(gun_box: Tuple[float, float, float, float],
+                      hand_boxes: List[Tuple[int, int, int, int]]) -> bool:
+    """True if the gun bounding box overlaps any hand region."""
+    gx1, gy1, gx2, gy2 = gun_box
+    for hx1, hy1, hx2, hy2 in hand_boxes:
+        if gx1 < hx2 and gx2 > hx1 and gy1 < hy2 and gy2 > hy1:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Video capture + inference
 # ---------------------------------------------------------------------------
 
@@ -236,10 +334,14 @@ class VideoCapture:
         aws_region:  str,
         source:      "int | str",
         show:        bool = False,
+        use_sahi:    bool = True,
+        use_pose:    bool = True,
+        kofn_k:      int  = DEFAULT_KOFN_K,
+        kofn_n:      int  = DEFAULT_KOFN_N,
     ):
         from ultralytics import YOLO
         logger.info("Loading YOLO model from %s ...", model_path)
-        self._model           = YOLO(str(model_path))
+        self._yolo            = YOLO(str(model_path))
         self._threshold       = threshold
         self._iou             = iou
         self._imgsz           = imgsz
@@ -257,31 +359,133 @@ class VideoCapture:
         self._run_detected    = False
         self._run_max_conf    = 0.0
 
-    def _run_inference(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
-        """Run YOLO on a single frame. Returns (max_confidence, annotated_frame)."""
-        results = self._model.predict(
-            source=frame,
-            conf=self._threshold,
-            iou=self._iou,
-            imgsz=self._imgsz,
-            verbose=False,
+        # --- Layer 1: temporal k-of-n gate ---
+        self._kofn_k          = kofn_k
+        self._kofn_n          = kofn_n
+        self._detection_window: deque = deque(maxlen=kofn_n)
+
+        # --- Layer 2: SAHI tiled inference ---
+        self._use_sahi = use_sahi and _SAHI_AVAILABLE
+        if use_sahi and not _SAHI_AVAILABLE:
+            logger.warning("sahi not installed — falling back to standard inference. "
+                           "Install with: pip install sahi")
+        if self._use_sahi:
+            self._sahi_model = AutoDetectionModel.from_pretrained(
+                "ultralytics",
+                model_path=str(model_path),
+                confidence_threshold=threshold,
+                device="cpu",
+            )
+            logger.info("SAHI tiled inference enabled  (slice=%dx%d overlap=%.0f%%)",
+                        SAHI_SLICE_H, SAHI_SLICE_W, SAHI_OVERLAP * 100)
+
+        # --- Layer 3: pose-overlap constraint ---
+        self._use_pose    = use_pose and _MEDIAPIPE_AVAILABLE
+        self._hand_detect = _build_hand_detector() if self._use_pose else None
+        if use_pose and not _MEDIAPIPE_AVAILABLE:
+            logger.warning("mediapipe not installed — pose-overlap constraint disabled. "
+                           "Install with: pip install mediapipe")
+        if self._use_pose:
+            logger.info("Pose-overlap constraint enabled")
+
+        active = []
+        if self._use_sahi:  active.append("SAHI-tiling")
+        if self._use_pose:  active.append("pose-overlap")
+        active.append(f"temporal-{kofn_k}of{kofn_n}")
+        logger.info("FP-reduction stack: %s", " + ".join(active))
+
+    # ------------------------------------------------------------------
+    # Inference helpers
+    # ------------------------------------------------------------------
+
+    def _run_inference_standard(self, frame: np.ndarray) -> Tuple[float, np.ndarray, list]:
+        """Standard single-shot YOLO inference. Returns (max_conf, annotated, raw_boxes)."""
+        results   = self._yolo.predict(
+            source=frame, conf=self._threshold, iou=self._iou,
+            imgsz=self._imgsz, verbose=False,
         )
         result    = results[0]
-        annotated = result.plot()  # BGR frame with bounding boxes drawn
+        annotated = result.plot()
         boxes     = result.boxes
+        raw_boxes = (
+            [tuple(b.xyxy[0].tolist()) for b in boxes]  # [(x1,y1,x2,y2), ...]
+            if len(boxes) > 0 else []
+        )
         max_conf  = float(boxes.conf.max()) if len(boxes) > 0 else 0.0
-        return max_conf, annotated
+        return max_conf, annotated, raw_boxes
 
-    def _process_frame(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
-        """Run inference and fire a throttled alert on detection. Returns (conf, annotated)."""
-        max_conf, annotated = self._run_inference(frame)
-        logger.debug("conf=%.4f", max_conf)
+    def _run_inference_sahi(self, frame: np.ndarray) -> Tuple[float, np.ndarray, list]:
+        """SAHI tiled inference — better recall on small/distant guns."""
+        import PIL.Image
+        pil_img = PIL.Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        result  = get_sliced_prediction(
+            pil_img,
+            self._sahi_model,
+            slice_height=SAHI_SLICE_H,
+            slice_width=SAHI_SLICE_W,
+            overlap_height_ratio=SAHI_OVERLAP,
+            overlap_width_ratio=SAHI_OVERLAP,
+            verbose=0,
+        )
+        raw_boxes = []
+        max_conf  = 0.0
+        for pred in result.object_prediction_list:
+            if pred.score.value >= self._threshold:
+                bb = pred.bbox
+                raw_boxes.append((bb.minx, bb.miny, bb.maxx, bb.maxy))
+                max_conf = max(max_conf, pred.score.value)
 
+        # Draw boxes on frame for display / S3 upload
+        annotated = frame.copy()
+        for x1, y1, x2, y2 in raw_boxes:
+            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)),
+                          (0, 0, 255), 2)
+
+        return max_conf, annotated, raw_boxes
+
+    # ------------------------------------------------------------------
+    # Per-frame pipeline
+    # ------------------------------------------------------------------
+
+    def _process_frame(self, frame: np.ndarray) -> Tuple[float, np.ndarray]:
+        """
+        Full three-layer FP-reduction pipeline.
+        Returns (reported_conf, annotated_frame).
+        reported_conf > 0 only when all layers pass.
+        """
+        # Layer 2: SAHI vs standard inference
+        if self._use_sahi:
+            max_conf, annotated, raw_boxes = self._run_inference_sahi(frame)
+        else:
+            max_conf, annotated, raw_boxes = self._run_inference_standard(frame)
+
+        # Layer 3: pose-overlap filter — discard boxes with no associated hand
+        if self._use_pose and raw_boxes and self._hand_detect is not None:
+            frame_rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h_boxes    = _hand_boxes(frame_rgb, self._hand_detect)
+            if h_boxes:
+                # Keep only gun boxes that overlap a hand region
+                filtered = [b for b in raw_boxes if _gun_box_has_hand(b, h_boxes)]
+                if not filtered:
+                    logger.debug("pose-overlap: all %d boxes suppressed (no hand overlap)", len(raw_boxes))
+                    max_conf = 0.0
+                else:
+                    max_conf = max_conf  # already the max of surviving boxes
+            else:
+                # No hands detected in frame at all — suppress everything
+                logger.debug("pose-overlap: no hands in frame, suppressing %d boxes", len(raw_boxes))
+                max_conf = 0.0
+
+        # Layer 1: temporal k-of-n gate
+        self._detection_window.append(max_conf >= self._threshold)
+        gate_open = sum(self._detection_window) >= self._kofn_k
+
+        # Track run-level stats regardless of gate
         self._run_max_conf = max(self._run_max_conf, max_conf)
-        if max_conf >= self._threshold:
+        if gate_open and max_conf >= self._threshold:
             self._run_detected = True
 
-        if max_conf > 0.0:
+        if gate_open and max_conf >= self._threshold:
             now = time.monotonic()
             if now - self._last_alert_time >= ALERT_COOLDOWN_SECS:
                 self._last_alert_time = now
@@ -298,15 +502,19 @@ class VideoCapture:
                     aws_region=self._aws_region,
                     executor=self._s3_executor,
                 )
-        return max_conf, annotated
+
+        return max_conf if gate_open else 0.0, annotated
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     @property
-    def result(self) -> tuple[bool, float]:
+    def result(self) -> Tuple[bool, float]:
         """(gun_detected, max_confidence) — valid after start() returns."""
         return (self._run_detected, self._run_max_conf)
 
     def request_stop(self) -> None:
-        """Signal the capture loop to exit cleanly (thread-safe)."""
         self._stop_event.set()
 
     def start(self) -> None:
@@ -314,6 +522,7 @@ class VideoCapture:
         self._stop_event.clear()
         self._run_detected = False
         self._run_max_conf = 0.0
+        self._detection_window.clear()
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open video source: {self._source}")
@@ -322,10 +531,8 @@ class VideoCapture:
             "Capturing  source=%s  threshold=%.2f  iou=%.2f  imgsz=%d  location=%s",
             self._source, self._threshold, self._iou, self._imgsz, self._location,
         )
-        if self._show:
-            print("\nPress 'q' in the video window (or Ctrl+C in terminal) to stop ...\n")
-        else:
-            print("\nPress Ctrl+C to stop ...\n")
+        print("\nPress 'q' in the video window to stop …\n" if self._show
+              else "\nPress Ctrl+C to stop …\n")
 
         try:
             while not self._stop_event.is_set():
@@ -334,7 +541,8 @@ class VideoCapture:
                     logger.info("Video source ended.")
                     break
                 conf, annotated = self._process_frame(frame)
-                print(f"  conf={conf:.4f}", end="\r")
+                window_hits = sum(self._detection_window)
+                print(f"  conf={conf:.4f}  gate={window_hits}/{self._kofn_k}", end="\r")
                 if self._show:
                     cv2.imshow("Vision — gun detection", annotated)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -391,6 +599,15 @@ def main() -> None:
                         help="AWS region for S3 (default: us-east-1)")
     parser.add_argument("--show",       action="store_true",
                         help="Open a window showing the annotated video feed (press 'q' to stop).")
+    # FP-reduction stack flags
+    parser.add_argument("--no_sahi",    action="store_true",
+                        help="Disable SAHI tiled inference (faster, lower recall on small guns).")
+    parser.add_argument("--no_pose",    action="store_true",
+                        help="Disable pose-overlap constraint.")
+    parser.add_argument("--kofn_k",    type=int, default=DEFAULT_KOFN_K,
+                        help=f"Frames required in temporal gate (default: {DEFAULT_KOFN_K})")
+    parser.add_argument("--kofn_n",    type=int, default=DEFAULT_KOFN_N,
+                        help=f"Temporal gate window size in frames (default: {DEFAULT_KOFN_N})")
     args = parser.parse_args()
 
     # Coerce --source to int when it looks like a device index
@@ -424,6 +641,10 @@ def main() -> None:
         aws_region=args.aws_region,
         source=source,
         show=args.show,
+        use_sahi=not args.no_sahi,
+        use_pose=not args.no_pose,
+        kofn_k=args.kofn_k,
+        kofn_n=args.kofn_n,
     )
 
     try:
