@@ -24,9 +24,9 @@ export function DevicePin({
   const didDrag = useRef(false);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    didDrag.current = false;
     if (!editMode) return;
     e.preventDefault();
-    didDrag.current = false;
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
