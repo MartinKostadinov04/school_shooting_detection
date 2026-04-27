@@ -109,10 +109,24 @@ interface StoreState {
 
   sendMessage: (msg: Omit<ChatMessage, "id" | "timestamp">) => void;
   setDeviceStatus: (id: string, status: Device["status"]) => void;
+  setDevicePosition: (id: string, x: number, y: number) => void;
+  resetDevicePositions: () => void;
+}
+
+const LS_POSITIONS_KEY = "te-device-positions";
+
+function savedPositions(): Record<string, { x: number; y: number }> {
+  try { return JSON.parse(localStorage.getItem(LS_POSITIONS_KEY) ?? "{}"); }
+  catch { return {}; }
+}
+
+function applyPositions(devices: Device[]): Device[] {
+  const saved = savedPositions();
+  return devices.map((d) => (saved[d.id] ? { ...d, x: saved[d.id].x, y: saved[d.id].y } : d));
 }
 
 export const useStore = create<StoreState>((set, get) => ({
-  devices: seedDevices,
+  devices: applyPositions(seedDevices),
   incidents: [...seedIncidents].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   ),
@@ -136,7 +150,7 @@ export const useStore = create<StoreState>((set, get) => ({
       ]);
       if (devRes.ok) {
         const devs: Device[] = await devRes.json();
-        set({ devices: devs });
+        set({ devices: applyPositions(devs) });
       }
       if (incRes.ok) {
         const incs: Incident[] = await incRes.json();
@@ -445,5 +459,19 @@ export const useStore = create<StoreState>((set, get) => ({
       devices: state.devices.map((d) => (d.id === id ? { ...d, status } : d)),
     }));
     apiPatch(`/api/devices/${id}/status`, { status });
+  },
+
+  setDevicePosition: (id, x, y) => {
+    set((state) => ({
+      devices: state.devices.map((d) => (d.id === id ? { ...d, x, y } : d)),
+    }));
+    const saved = savedPositions();
+    saved[id] = { x, y };
+    localStorage.setItem(LS_POSITIONS_KEY, JSON.stringify(saved));
+  },
+
+  resetDevicePositions: () => {
+    localStorage.removeItem(LS_POSITIONS_KEY);
+    set({ devices: seedDevices });
   },
 }));
