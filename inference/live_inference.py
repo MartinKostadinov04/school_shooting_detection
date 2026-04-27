@@ -339,11 +339,19 @@ class AudioCapture:
 
     def run_demo_file_inprocess(self, file_path: Path) -> None:
         """Single-terminal demo: load file, play audio, run inference here."""
-        import librosa
+        import soundfile as sf
+        import numpy as np
         import sounddevice as sd
 
         logger.info("Loading %s ...", file_path)
-        audio, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
+        raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
+        if raw.ndim == 2:
+            raw = raw.mean(axis=1)
+        if orig_sr != SAMPLE_RATE:
+            import scipy.signal as ss
+            n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
+            raw = ss.resample(raw, n_samples).astype("float32")
+        audio = raw
         duration  = len(audio) / SAMPLE_RATE
         n_chunks  = len(audio) // CHUNK_SAMPLES
         chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
