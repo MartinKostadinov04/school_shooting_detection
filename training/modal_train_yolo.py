@@ -61,9 +61,9 @@ WEIGHTS_DIR  = f"{VOLUME_MOUNT}/weights"
 
 DEFAULT_BASE_MODEL = "yolov8m.pt"
 DEFAULT_EPOCHS     = 100
-DEFAULT_IMGSZ      = 640    # matches original training resolution; use 1280 + batch 4 on A10G
-DEFAULT_BATCH      = 16     # safe for T4 16GB at imgsz=640; drop to 4 for imgsz=1280
-DEFAULT_GPU        = "T4"
+DEFAULT_IMGSZ      = 1280   # A10G 24GB supports 1280 at batch=8 — matches inference resolution
+DEFAULT_BATCH      = 8      # A10G@1280→8, A10G@640→32, T4@1280→4, T4@640→16
+DEFAULT_GPU        = "A10G"
 DEFAULT_PATIENCE   = 20
 
 # ---------------------------------------------------------------------------
@@ -303,9 +303,10 @@ def main(
 
     To use a different GPU, change DEFAULT_GPU at the top of this file and
     adjust DEFAULT_BATCH accordingly before running:
-        T4  (16GB):  imgsz=640  batch=16  or  imgsz=1280  batch=4
-        A10G (24GB): imgsz=640  batch=32  or  imgsz=1280  batch=8
-        A100 (40GB): imgsz=1280 batch=16
+        A10G (24GB):  imgsz=1280 batch=8   or  imgsz=640 batch=32   ← default
+        A100 (40GB):  imgsz=1280 batch=16
+        L40S (48GB):  imgsz=1280 batch=24
+        T4   (16GB):  imgsz=640  batch=16  or  imgsz=1280 batch=4
     """
     if not Path("~/.modal.toml").expanduser().exists() \
             and not os.environ.get("MODAL_TOKEN_ID"):
