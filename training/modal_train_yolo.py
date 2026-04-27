@@ -3,28 +3,24 @@ modal_train_yolo.py
 ===================
 Fine-tune YOLOv8m on a firearm-detection dataset using Modal cloud GPU.
 
-The dataset must be in standard YOLO format (a data.yaml pointing at
-images/train, images/val and labels/train, labels/val directories).
-Everything lives on a Modal persistent Volume so nothing is lost between runs.
-
 Setup (one-time)
 ----------------
 1. Install Modal and authenticate::
 
        pip install modal
-       modal token new          # saves credentials to ~/.modal.toml
+       modal token new
 
 2. Create the persistent volume::
 
        modal volume create yolo-training
 
-3. Upload your dataset (YOLO format)::
+3. Upload your merged dataset (YOLO format) to the vision-train folder::
 
-       modal volume put yolo-training data/yolo/dataset  dataset
+       modal volume put yolo-training <local_dataset_dir>/  vision-train/
 
-   The volume will contain::
+   The volume must contain::
 
-       /vol/dataset/
+       /vol/vision-train/
            data.yaml
            images/train/   images/val/
            labels/train/   labels/val/
@@ -33,40 +29,17 @@ Run
 ---
 ::
 
-    # Fine-tune from YOLOv8m pretrained weights (recommended for first run)
     modal run training/modal_train_yolo.py
-
-    # Resume from a previous checkpoint saved in the volume
     modal run training/modal_train_yolo.py --resume
-
-    # Override epochs or GPU
     modal run training/modal_train_yolo.py --epochs 50 --gpu A10G
+    modal run training/modal_train_yolo.py --imgsz 1280 --batch 4
 
 Download weights
 ----------------
 ::
 
     modal volume get yolo-training weights/best.pt  models/yolo_finetuned/best.pt
-
-Volume layout (inside /vol)
-----------------------------
-::
-
-    /vol/
-      dataset/          ← YOLO dataset uploaded before running
-      weights/          ← written by this script
-        best.pt         ← best checkpoint (mAP@50)
-        last.pt         ← final checkpoint
-        results.csv     ← per-epoch metrics
-        args.yaml       ← training args snapshot
-
-Authentication
---------------
-Modal reads credentials from ``~/.modal.toml`` (set by ``modal token new``)
-or from the environment variables::
-
-    MODAL_TOKEN_ID
-    MODAL_TOKEN_SECRET
+    modal volume get yolo-training weights/results.csv experiments/plots/modal_results.csv
 """
 
 import os
@@ -79,17 +52,17 @@ import modal
 # Configuration
 # ---------------------------------------------------------------------------
 
-APP_NAME      = "yolo-finetune"
-VOLUME_NAME   = "yolo-training"
-VOLUME_MOUNT  = "/vol"
+APP_NAME     = "yolo-finetune"
+VOLUME_NAME  = "yolo-training"
+VOLUME_MOUNT = "/vol"
 
-DATASET_DIR   = f"{VOLUME_MOUNT}/dataset"   # uploaded before run
-WEIGHTS_DIR   = f"{VOLUME_MOUNT}/weights"   # written by this script
+DATASET_DIR  = f"{VOLUME_MOUNT}/vision-train"   # matches the upload folder name
+WEIGHTS_DIR  = f"{VOLUME_MOUNT}/weights"
 
-DEFAULT_BASE_MODEL = "yolov8m.pt"   # downloaded from Ultralytics hub if not in volume
+DEFAULT_BASE_MODEL = "yolov8m.pt"
 DEFAULT_EPOCHS     = 100
-DEFAULT_IMGSZ      = 1280
-DEFAULT_BATCH      = 8              # safe for 16 GB T4; raise to 16 for A10G
+DEFAULT_IMGSZ      = 640    # matches original training resolution; use 1280 + batch 4 on A10G
+DEFAULT_BATCH      = 16     # safe for T4 16GB at imgsz=640; drop to 4 for imgsz=1280
 DEFAULT_GPU        = "T4"
 DEFAULT_PATIENCE   = 20
 
@@ -109,11 +82,69 @@ training_image = (
         "pyyaml>=6.0",
         "opencv-python-headless>=4.8.0",
         "pillow>=10.0.0",
-        "sahi>=0.11.0",   # tiled inference at eval time
     )
 )
 
 data_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fix_data_yaml(yaml_path: Path) -> Path:
+    """
+    Rewrite the data.yaml so all paths are absolute inside the volume.
+
+    Roboflow exports set `path:` relative to wherever the file was exported.
+    When uploaded to Modal, those relative paths break. This rewrites them
+    to absolute paths anchored at the yaml file's parent directory.
+    """
+    import yaml
+
+    with open(yaml_path) as f:
+        cfg = yaml.safe_load(f)
+
+    dataset_root = str(yaml_path.parent)
+    cfg["path"] = dataset_root
+
+    # Ensure train/val/test are relative strings (ultralytics joins path + split)
+    for split in ("train", "val", "test"):
+        if split in cfg and cfg[split] and Path(cfg[split]).is_absolute():
+            # Strip the old absolute prefix and keep only the relative part
+            cfg[split] = str(Path(cfg[split]).relative_to(Path(cfg[split]).anchor))
+
+    fixed_path = yaml_path.parent / "data_fixed.yaml"
+    with open(fixed_path, "w") as f:
+        yaml.dump(cfg, f, default_flow_style=False)
+
+    print(f"[modal_train_yolo] data.yaml rewritten → {fixed_path}")
+    print(f"[modal_train_yolo]   path  : {cfg['path']}")
+    print(f"[modal_train_yolo]   train : {cfg.get('train')}")
+    print(f"[modal_train_yolo]   val   : {cfg.get('val')}")
+    print(f"[modal_train_yolo]   nc    : {cfg.get('nc')}  names: {cfg.get('names')}")
+    return fixed_path
+
+
+def _extract_metrics(results) -> dict:
+    """
+    Pull final metrics from an ultralytics Results object robustly.
+    Key names vary slightly across ultralytics versions.
+    """
+    rd = getattr(results, "results_dict", {}) or {}
+
+    def _get(*keys: str) -> float:
+        for k in keys:
+            if k in rd:
+                return float(rd[k])
+        return 0.0
+
+    return {
+        "mAP50":    _get("metrics/mAP50(B)",    "mAP_0.5"),
+        "mAP50_95": _get("metrics/mAP50-95(B)", "mAP_0.5:0.95"),
+        "precision":_get("metrics/precision(B)", "precision"),
+        "recall":   _get("metrics/recall(B)",    "recall"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +156,7 @@ data_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=False)
     gpu=DEFAULT_GPU,
     volumes={VOLUME_MOUNT: data_volume},
     timeout=18000,   # 5 hours — enough for 100 epochs on T4
-    memory=16384,
+    memory=32768,    # 32 GB RAM; YOLO + dataloader workers are memory hungry
 )
 def run_training(
     base_model:  str  = DEFAULT_BASE_MODEL,
@@ -136,42 +167,47 @@ def run_training(
     resume:      bool = False,
 ) -> dict:
     """
-    Fine-tune YOLO on the dataset stored in the Modal volume.
+    Fine-tune YOLO on the dataset stored at /vol/vision-train in the Modal volume.
 
     Parameters
     ----------
     base_model : str
-        Starting weights. Either a model name (downloaded from Ultralytics hub,
-        e.g. ``"yolov8m.pt"``) or a path inside the volume (e.g.
-        ``"/vol/weights/last.pt"`` to resume from a previous run).
+        Starting weights — Ultralytics hub name (e.g. ``"yolov8m.pt"``) or an
+        absolute path inside the volume (e.g. ``"/vol/weights/last.pt"``).
     epochs : int
-        Maximum training epochs.
+        Maximum training epochs (early stopping via patience).
     imgsz : int
-        Training image size (square). 1280 matches inference resolution.
+        Training image size. 640 for T4 batch=16; 1280 for A10G batch=4.
     batch : int
-        Batch size per GPU. T4: 8; A10G: 16.
+        Batch size. Reduce if OOM: T4@640→16, T4@1280→4, A10G@640→32.
     patience : int
-        Early-stopping patience (epochs without mAP improvement).
+        Early-stopping patience in epochs without mAP improvement.
     resume : bool
-        If True, resume from ``/vol/weights/last.pt`` instead of ``base_model``.
-
-    Returns
-    -------
-    dict
-        Final metrics from the best checkpoint.
+        Resume from /vol/weights/last.pt if it exists.
     """
     import shutil
+    import torch
     from ultralytics import YOLO
+
+    print(f"[modal_train_yolo] PyTorch  : {torch.__version__}")
+    print(f"[modal_train_yolo] CUDA     : {torch.cuda.is_available()}  "
+          f"device={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}")
 
     weights_path = Path(WEIGHTS_DIR)
     weights_path.mkdir(parents=True, exist_ok=True)
 
-    data_yaml = Path(DATASET_DIR) / "data.yaml"
+    # Locate dataset
+    dataset_root = Path(DATASET_DIR)
+    data_yaml    = dataset_root / "data.yaml"
     if not data_yaml.exists():
         raise FileNotFoundError(
-            f"Dataset not found at {data_yaml}. "
-            "Upload with: modal volume put yolo-training data/yolo/dataset dataset"
+            f"data.yaml not found at {data_yaml}.\n"
+            f"Upload with:\n"
+            f"  modal volume put {VOLUME_NAME} <local_dir>/  vision-train/"
         )
+
+    # Rewrite paths in data.yaml to absolute volume paths
+    data_yaml = _fix_data_yaml(data_yaml)
 
     # Pick starting weights
     if resume and (weights_path / "last.pt").exists():
@@ -179,12 +215,17 @@ def run_training(
         print(f"[modal_train_yolo] Resuming from {model_source}")
     else:
         model_source = base_model
-        print(f"[modal_train_yolo] Starting from {model_source}")
+        print(f"[modal_train_yolo] Starting from  {model_source}")
 
     model = YOLO(model_source)
 
-    print(f"[modal_train_yolo] Dataset : {data_yaml}")
-    print(f"[modal_train_yolo] Epochs  : {epochs}  imgsz={imgsz}  batch={batch}")
+    print(f"[modal_train_yolo] Dataset  : {data_yaml}")
+    print(f"[modal_train_yolo] Epochs   : {epochs}  imgsz={imgsz}  batch={batch}  patience={patience}")
+
+    # Clean up any stale /tmp run to avoid exist_ok collision issues
+    run_dir = Path("/tmp/yolo_run/train")
+    if run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
 
     results = model.train(
         data=str(data_yaml),
@@ -192,18 +233,17 @@ def run_training(
         imgsz=imgsz,
         batch=batch,
         patience=patience,
-        device=0,                       # GPU 0
+        device=0,
         project="/tmp/yolo_run",
         name="train",
-        exist_ok=True,
+        exist_ok=False,
         val=True,
         save=True,
-        save_period=10,                 # checkpoint every 10 epochs
-        # Hard-negative aware augmentation
+        save_period=10,
+        # Augmentation tuned for CCTV / small objects
         mosaic=1.0,
         mixup=0.1,
-        copy_paste=0.1,
-        # Recommended for CCTV / small objects
+        # copy_paste requires segmentation masks — omitted for bbox-only datasets
         hsv_h=0.015,
         hsv_s=0.7,
         hsv_v=0.4,
@@ -211,23 +251,23 @@ def run_training(
         fliplr=0.5,
     )
 
-    run_dir = Path("/tmp/yolo_run/train")
+    # Persist weights and logs to the volume
+    weights_run_dir = run_dir / "weights"
+    for fname in ("best.pt", "last.pt"):
+        src = weights_run_dir / fname
+        if src.exists():
+            shutil.copy(src, weights_path / fname)
+            print(f"[modal_train_yolo] Saved {fname} → {weights_path / fname}")
 
-    # Copy best.pt and last.pt to the persistent volume
-    for fname in ("best.pt", "last.pt", "results.csv", "args.yaml"):
-        src = run_dir / "weights" / fname if fname.endswith(".pt") else run_dir / fname
+    for fname in ("results.csv", "args.yaml"):
+        src = run_dir / fname
         if src.exists():
             shutil.copy(src, weights_path / fname)
             print(f"[modal_train_yolo] Saved {fname} → {weights_path / fname}")
 
     data_volume.commit()
 
-    metrics = {
-        "mAP50":    float(results.results_dict.get("metrics/mAP50(B)",    0)),
-        "mAP50_95": float(results.results_dict.get("metrics/mAP50-95(B)", 0)),
-        "precision":float(results.results_dict.get("metrics/precision(B)",0)),
-        "recall":   float(results.results_dict.get("metrics/recall(B)",   0)),
-    }
+    metrics = _extract_metrics(results)
 
     print("\n[modal_train_yolo] ── Final metrics ──────────────────────────")
     for k, v in metrics.items():
@@ -248,7 +288,6 @@ def main(
     imgsz:      int  = DEFAULT_IMGSZ,
     batch:      int  = DEFAULT_BATCH,
     patience:   int  = DEFAULT_PATIENCE,
-    gpu:        str  = DEFAULT_GPU,
     resume:     bool = False,
 ) -> None:
     """
@@ -257,27 +296,30 @@ def main(
     Usage::
 
         modal run training/modal_train_yolo.py
-        modal run training/modal_train_yolo.py --epochs 50 --gpu A10G
+        modal run training/modal_train_yolo.py --epochs 50
+        modal run training/modal_train_yolo.py --imgsz 1280 --batch 4
         modal run training/modal_train_yolo.py --resume
         modal run training/modal_train_yolo.py --base_model /vol/weights/last.pt
+
+    To use a different GPU, change DEFAULT_GPU at the top of this file and
+    adjust DEFAULT_BATCH accordingly before running:
+        T4  (16GB):  imgsz=640  batch=16  or  imgsz=1280  batch=4
+        A10G (24GB): imgsz=640  batch=32  or  imgsz=1280  batch=8
+        A100 (40GB): imgsz=1280 batch=16
     """
     if not Path("~/.modal.toml").expanduser().exists() \
             and not os.environ.get("MODAL_TOKEN_ID"):
         print(
             "ERROR: Modal credentials not found.\n"
-            "Run `modal token new` to authenticate, or set:\n"
-            "  export MODAL_TOKEN_ID=...\n"
-            "  export MODAL_TOKEN_SECRET=..."
+            "Run `modal token new` to authenticate."
         )
         sys.exit(1)
 
-    # Override GPU at call time by patching the function decorator dynamically
-    fn = run_training.with_options(gpu=gpu)
-
-    print(f"Submitting YOLO fine-tune job to Modal (GPU={gpu}) ...")
+    print(f"Submitting YOLO fine-tune job to Modal ...")
     print(f"  base_model={base_model}  epochs={epochs}  imgsz={imgsz}  batch={batch}")
+    print(f"  dataset=/vol/vision-train  weights → /vol/weights/")
 
-    metrics = fn.remote(
+    metrics = run_training.remote(
         base_model=base_model,
         epochs=epochs,
         imgsz=imgsz,
@@ -291,5 +333,6 @@ def main(
     print(f"  mAP@50-95     : {metrics['mAP50_95']:.4f}")
     print(f"  Precision     : {metrics['precision']:.4f}")
     print(f"  Recall        : {metrics['recall']:.4f}")
-    print(f"\nDownload best weights with:")
+    print(f"\nDownload weights:")
     print(f"  modal volume get {VOLUME_NAME} weights/best.pt models/yolo_finetuned/best.pt")
+    print(f"  modal volume get {VOLUME_NAME} weights/results.csv experiments/plots/modal_results.csv")
