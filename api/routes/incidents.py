@@ -258,6 +258,87 @@ def update_incident(
     return _incident_out(inc)
 
 
+@router.post("/incidents/{incident_id}/submit-video", response_model=schemas.IncidentOut)
+def submit_video_path(
+    incident_id: str,
+    body: schemas.VideoPathSubmit,
+    db: Session = Depends(get_db),
+):
+    """Accept a video file path from the police page and queue it for YOLO inference.
+    The result arrives back via Ably (video:detected or video:negative)."""
+    inc = db.query(models.Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    db.add(models.IncidentTimeline(
+        incident_id=inc.id,
+        timestamp=datetime.now(timezone.utc),
+        label="Video path submitted",
+        detail=body.video_path,
+    ))
+    db.commit()
+
+    # Trigger video inference in a background thread so the HTTP response
+    # returns immediately. Results are published via Ably by cascade.py helpers.
+    import threading
+    from pathlib import Path as _Path
+
+    def _run_video():
+        try:
+            from dotenv import load_dotenv as _ldenv
+            _ldenv()
+            import os
+            from inference.cascade import infer_video_file, _LocalFileServer
+            from inference.live_inference import AblyPublisher, DEFAULT_CHANNEL
+
+            ably_key = os.environ.get("ABLY_API_KEY", "")
+            if not ably_key:
+                return
+            publisher = AblyPublisher(ably_key, DEFAULT_CHANNEL)
+            file_server = _LocalFileServer()
+            file_server.start()
+            try:
+                import tensorflow as tf
+                from pipeline.extract_embeddings import load_yamnet
+                # Video inference only needs YOLO — import lazily
+                from vision.live_inference import VideoCapture as _VC
+                _vc = _VC.__new__(_VC)
+                _vc._model_path = _Path("YOLO_hugging-main/best.pt")
+                _vc._threshold  = 0.60
+                _vc._location   = body.location or inc.location
+                _vc._publisher  = publisher
+                _vc._log_file   = _Path("vision/cascade_detections.jsonl")
+                _vc._file_server = file_server
+
+                from inference.cascade import infer_video_file
+                import yaml as _yaml, json as _json, logging as _log
+                from pathlib import Path as _P
+                import tensorflow as _tf
+                _logger = _log.getLogger(__name__)
+
+                # Re-use cascade's standalone video inference helper
+                infer_video_file(
+                    path=_P(body.video_path),
+                    location=body.location or inc.location,
+                    model_path=_P("YOLO_hugging-main/best.pt"),
+                    threshold=0.60,
+                    iou=0.45,
+                    imgsz=1280,
+                    publisher=publisher,
+                    log_file=_P("vision/cascade_detections.jsonl"),
+                    show=False,
+                    file_server=file_server,
+                )
+            finally:
+                publisher.close()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Background video inference failed: %s", exc)
+
+    threading.Thread(target=_run_video, daemon=True).start()
+    db.refresh(inc)
+    return _incident_out(inc)
+
+
 @router.post("/incidents/{incident_id}/dispatch", response_model=schemas.IncidentOut)
 def dispatch_unit(incident_id: str, db: Session = Depends(get_db)):
     inc = db.query(models.Incident).filter_by(id=incident_id).first()

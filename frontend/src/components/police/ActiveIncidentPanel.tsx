@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { format } from "date-fns";
-import { Volume2, Video, Play, Pause } from "lucide-react";
+import { Volume2, Video, Play, Pause, Send, Clock } from "lucide-react";
 import WaveSurfer from "wavesurfer.js";
 import type { Incident } from "@/types";
-import { SeverityBadge, SourceBadge, StatusPill } from "@/components/ui/StatusBadges";
+import { SourceBadge, StatusPill } from "@/components/ui/StatusBadges";
 import { CommunicationWindow } from "@/components/comms/CommunicationWindow";
 import { cn } from "@/lib/utils";
+
+const API_BASE = (import.meta as unknown as { env: Record<string, string> })
+  .env?.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export function ActiveIncidentPanel({ incident }: { incident: Incident | null }) {
   if (!incident) {
@@ -41,7 +44,6 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
           </div>
           <div className="flex flex-col items-end gap-1.5">
             <StatusPill status={incident.status} />
-            <SeverityBadge severity={incident.severity} />
             <SourceBadge source={incident.source} />
           </div>
         </div>
@@ -63,11 +65,11 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
                 Audio Evidence
               </h3>
             </div>
-            {typeof incident.probability === "number" && (
-              <span className="font-mono text-[10px] uppercase tracking-widest text-tactical-amber">
-                P {(incident.probability * 100).toFixed(0)}%
-              </span>
-            )}
+            <span className="font-mono text-[10px] uppercase tracking-widest text-tactical-amber">
+              P {typeof incident.probability === "number"
+                ? `${(incident.probability * 100).toFixed(0)}%`
+                : "—"}
+            </span>
           </div>
           {incident.audioUrl ? (
             <AudioWaveform url={incident.audioUrl} />
@@ -95,6 +97,14 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
                 CONFIRMED
               </span>
             )}
+            {!incident.videoConfirmed &&
+              !incident.videoUrl &&
+              incident.source === "AUDIO-AI" &&
+              !incident.timeline.some((t) => t.label === "Video scan negative") && (
+              <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-tactical-amber">
+                <Clock className="h-3 w-3" /> Awaiting
+              </span>
+            )}
           </div>
           {incident.videoUrl ? (
             <video
@@ -102,6 +112,9 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
               controls
               className="aspect-video w-full rounded-sm bg-black"
             />
+          ) : incident.source === "AUDIO-AI" &&
+            !incident.timeline.some((t) => t.label === "Video scan negative") ? (
+            <VideoPathInput incidentId={incident.id} location={incident.location} />
           ) : (
             <div className="flex aspect-video items-center justify-center rounded-sm border border-dashed border-border bg-background/40 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
               No video segment
@@ -221,6 +234,75 @@ function AudioWaveform({ url }: { url: string }) {
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+function VideoPathInput({
+  incidentId,
+  location,
+}: {
+  incidentId: string;
+  location: string;
+}) {
+  const [path, setPath] = useState("");
+  const [status, setStatus] = useState<"idle" | "submitting" | "done" | "error">("idle");
+
+  const submit = async () => {
+    if (!path.trim()) return;
+    setStatus("submitting");
+    try {
+      const res = await fetch(`${API_BASE}/api/incidents/${incidentId}/submit-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_path: path.trim(), location }),
+      });
+      setStatus(res.ok ? "done" : "error");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3 rounded-sm border border-dashed border-tactical-amber/40 bg-background/40 p-3">
+      <div className="flex items-center gap-2">
+        <span className="h-1.5 w-1.5 animate-tactical-blink rounded-full bg-tactical-amber" />
+        <span className="font-mono text-[10px] uppercase tracking-widest text-tactical-amber">
+          Waiting for video confirmation
+        </span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Enter the path to a video file to run gun-detection on it and confirm or clear this incident.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={path}
+          onChange={(e) => { setPath(e.target.value); setStatus("idle"); }}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          placeholder="/path/to/clip.mp4"
+          disabled={status === "submitting" || status === "done"}
+          className="flex-1 rounded-sm border border-border bg-background px-2 py-1.5 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/50 focus:border-tactical-amber/60 focus:outline-none disabled:opacity-50"
+        />
+        <button
+          onClick={submit}
+          disabled={!path.trim() || status === "submitting" || status === "done"}
+          className="inline-flex items-center gap-1.5 rounded-sm border border-tactical-violet/40 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-tactical-violet hover:bg-tactical-violet/10 disabled:opacity-40"
+        >
+          <Send className="h-3 w-3" />
+          {status === "submitting" ? "Sending…" : status === "done" ? "Sent" : "Submit"}
+        </button>
+      </div>
+      {status === "done" && (
+        <div className="font-mono text-[10px] uppercase tracking-widest text-tactical-green">
+          Path submitted — video inference running…
+        </div>
+      )}
+      {status === "error" && (
+        <div className="font-mono text-[10px] uppercase tracking-widest text-tactical-red">
+          Submit failed — check backend connection
+        </div>
+      )}
     </div>
   );
 }

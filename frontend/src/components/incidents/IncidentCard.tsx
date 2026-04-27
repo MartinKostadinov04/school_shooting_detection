@@ -1,6 +1,6 @@
 import { format, formatDistanceToNow } from "date-fns";
 import type { Incident } from "@/types";
-import { SeverityBadge, SourceBadge, StatusPill } from "@/components/ui/StatusBadges";
+import { SourceBadge, StatusPill } from "@/components/ui/StatusBadges";
 import { cn } from "@/lib/utils";
 import { useStore } from "@/lib/incidentStore";
 import { Check, Send, ShieldCheck } from "lucide-react";
@@ -40,7 +40,6 @@ export function IncidentCard({
 
       <div className="mt-2 flex items-center gap-2">
         <SourceBadge source={incident.source} />
-        <SeverityBadge severity={incident.severity} />
         {incident.videoConfirmed && (
           <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-widest text-tactical-violet">
             <ShieldCheck className="h-3 w-3" /> VIDEO CONF
@@ -51,11 +50,11 @@ export function IncidentCard({
       <div className="mt-2 text-sm font-medium text-foreground">
         {incident.type} · {incident.location}
       </div>
-      {typeof incident.probability === "number" && (
-        <div className="mt-1 font-mono text-[11px] text-tactical-amber">
-          P = {(incident.probability * 100).toFixed(0)}%
-        </div>
-      )}
+      <div className="mt-1 font-mono text-[11px] text-tactical-amber">
+        P = {typeof incident.probability === "number"
+          ? `${(incident.probability * 100).toFixed(0)}%`
+          : "—"}
+      </div>
 
       <div
         className="mt-3 flex items-center gap-1.5"

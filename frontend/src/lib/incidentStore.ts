@@ -116,6 +116,12 @@ interface StoreState {
   resetDevicePositions: () => void;
 }
 
+/** Case-insensitive, trimmed location equality — prevents misses when the
+ *  Python inference script uses different capitalisation than the seed data. */
+function locEq(a: string, b: string) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 const LS_POSITIONS_KEY = "te-device-positions";
 
 function savedPositions(): Record<string, { x: number; y: number }> {
@@ -220,20 +226,20 @@ export const useStore = create<StoreState>((set, get) => ({
     const triggeredAt = now;
     set((state) => ({
       devices: state.devices.map((d) =>
-        d.location === location && d.type === sensorType
+        locEq(d.location, location) && d.type === sensorType
           ? { ...d, status: "triggered" as DeviceStatus, lastEvent: eventLabel, lastSeen: triggeredAt }
           : d,
       ),
     }));
     get()
-      .devices.filter((d) => d.location === location && d.type === sensorType)
+      .devices.filter((d) => locEq(d.location, location) && d.type === sensorType)
       .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
 
     // Auto-alert to police channel on audio gunshot detection
     if (source === "AUDIO-AI") {
       const school = POLICE_SCHOOLS[0];
       const mic = get().devices.find(
-        (d) => d.location === location && d.type === "microphone",
+        (d) => locEq(d.location, location) && d.type === "microphone",
       );
       const timeStr = new Date(now).toLocaleTimeString("en-US", {
         hour: "2-digit",
@@ -262,7 +268,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set((state) => {
       const incidents = [...state.incidents];
       const idx = incidents.findIndex(
-        (i) => i.location === location && i.status !== "RESOLVED",
+        (i) => locEq(i.location, location) && i.status !== "RESOLVED",
       );
       if (idx === -1) return state;
       const inc = incidents[idx];
@@ -304,7 +310,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set((state) => {
       const incidents = [...state.incidents];
       const idx = incidents.findIndex(
-        (i) => i.location === location && i.status !== "RESOLVED",
+        (i) => locEq(i.location, location) && i.status !== "RESOLVED",
       );
       if (idx === -1) return state;
       const inc = incidents[idx];
@@ -329,18 +335,18 @@ export const useStore = create<StoreState>((set, get) => ({
       // Trigger cameras at this location
       const ts = new Date().toISOString();
       const updatedDevices = state.devices.map((d) =>
-        d.location === location && d.type === "camera"
+        locEq(d.location, location) && d.type === "camera"
           ? { ...d, status: "triggered" as DeviceStatus, lastEvent: "Gun detected by VIDEO-AI", lastSeen: ts }
           : d,
       );
       state.devices
-        .filter((d) => d.location === location && d.type === "camera")
+        .filter((d) => locEq(d.location, location) && d.type === "camera")
         .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
 
       // Police follow-up: visual confirmation
       const school = POLICE_SCHOOLS[0];
       const cam = state.devices.find(
-        (d) => d.location === location && d.type === "camera",
+        (d) => locEq(d.location, location) && d.type === "camera",
       );
       const timeStr = new Date(ts).toLocaleTimeString("en-US", {
         hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -365,7 +371,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set((state) => {
       const incidents = [...state.incidents];
       const idx = incidents.findIndex(
-        (i) => i.location === location && i.status !== "RESOLVED",
+        (i) => locEq(i.location, location) && i.status !== "RESOLVED",
       );
       if (idx === -1) return state;
       const inc = incidents[idx];
@@ -387,7 +393,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // Police follow-up: no visual confirmation
       const school = POLICE_SCHOOLS[0];
       const cam = state.devices.find(
-        (d) => d.location === location && d.type === "camera",
+        (d) => locEq(d.location, location) && d.type === "camera",
       );
       const timeStr = new Date().toLocaleTimeString("en-US", {
         hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
@@ -451,12 +457,12 @@ export const useStore = create<StoreState>((set, get) => ({
       const incident = get().incidents.find((i) => i.id === id);
       if (incident) {
         const toReset = get().devices.filter(
-          (d) => d.location === incident.location && d.status === "triggered",
+          (d) => locEq(d.location, incident.location) && d.status === "triggered",
         );
         if (toReset.length) {
           set((state) => ({
             devices: state.devices.map((d) =>
-              d.location === incident.location && d.status === "triggered"
+              locEq(d.location, incident.location) && d.status === "triggered"
                 ? { ...d, status: "online" as DeviceStatus }
                 : d,
             ),

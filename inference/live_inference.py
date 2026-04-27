@@ -451,6 +451,11 @@ class AudioCapture:
 
             sd.wait()
             print(f"\n\nDone. {n_chunks} chunks processed.")
+            print(f"\n  File server live at http://localhost:{file_server._port}")
+            print("  Keep this window open so the police page can stream audio.")
+            print("  Ctrl+C to exit.\n")
+            while True:
+                time.sleep(1)
         finally:
             self._local_snippet_url = None
             file_server.stop()

@@ -108,6 +108,11 @@ class IncidentUpdate(BaseModel):
     video_confirmed: Optional[bool] = None
 
 
+class VideoPathSubmit(BaseModel):
+    video_path: str
+    location: Optional[str] = None
+
+
 # ---------- Messages ----------
 
 class MessageOut(BaseModel):
