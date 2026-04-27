@@ -7,7 +7,7 @@ import type { Device } from "@/types";
 import { design } from "@/config/design";
 import floorplan from "@/assets/school-floorplan.png";
 
-export function SchoolMap() {
+export function SchoolMap({ readOnly = false }: { readOnly?: boolean }) {
   const devices             = useStore((s) => s.devices);
   const setDevicePosition   = useStore((s) => s.setDevicePosition);
   const resetDevicePositions = useStore((s) => s.resetDevicePositions);
@@ -34,20 +34,21 @@ export function SchoolMap() {
             <CtrlBtn onClick={() => setZoom((z) => Math.min(z + 0.2, 2))}><ZoomIn className="h-3.5 w-3.5" /></CtrlBtn>
             <CtrlBtn onClick={() => setZoom((z) => Math.max(z - 0.2, 0.6))}><ZoomOut className="h-3.5 w-3.5" /></CtrlBtn>
             <CtrlBtn onClick={() => setZoom(1)}><Locate className="h-3.5 w-3.5" /></CtrlBtn>
-            <div className="my-0.5 h-px bg-border" />
-            <CtrlBtn onClick={() => { setEditMode(true); setSelected(null); }}>
-              <Pencil className="h-3.5 w-3.5" />
-            </CtrlBtn>
+            {!readOnly && (
+              <>
+                <div className="my-0.5 h-px bg-border" />
+                <CtrlBtn onClick={() => { setEditMode(true); setSelected(null); }}>
+                  <Pencil className="h-3.5 w-3.5" />
+                </CtrlBtn>
+              </>
+            )}
           </>
         ) : (
           <>
             <CtrlBtn onClick={exitEdit} title="Done">
               <Check className="h-3.5 w-3.5 text-tactical-green" />
             </CtrlBtn>
-            <CtrlBtn
-              onClick={() => { resetDevicePositions(); }}
-              title="Reset all positions"
-            >
+            <CtrlBtn onClick={() => { resetDevicePositions(); }} title="Reset all positions">
               <RotateCcw className="h-3.5 w-3.5 text-tactical-amber" />
             </CtrlBtn>
           </>

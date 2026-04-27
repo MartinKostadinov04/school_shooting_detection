@@ -116,7 +116,7 @@ function SchoolDispatchPage() {
         </div>
 
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-          <SchoolMap />
+          <SchoolMap readOnly />
           <ActiveIncidentPanel incident={selected} />
         </div>
       </div>
