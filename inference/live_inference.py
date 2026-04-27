@@ -43,9 +43,13 @@ import io
 import json
 import logging
 import os
+import re
+import socket
 import sys
 import threading
+import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,17 +69,19 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-SAMPLE_RATE: int   = 16000
-CLIP_SAMPLES: int  = 32000   # 2 s window
-CHUNK_SAMPLES: int = 8000    # 0.5 s hop
-DEFAULT_MODEL_PATH = Path("models/saved_weights/dense_head_best.keras")
-DEFAULT_LOG_FILE   = Path("inference/detections.jsonl")
-DEFAULT_THRESHOLD  = 0.64
-DEFAULT_CHANNEL    = "gunshot-detection"
-DEFAULT_LOCATION   = "unknown"
-S3_PRESIGN_EXPIRY  = 3600    # seconds
-DEFAULT_DEMO_PORT  = 9999    # UDP port for --run / --demo_file IPC
-CHUNK_BYTES        = CHUNK_SAMPLES * 4  # float32 = 4 bytes per sample
+SAMPLE_RATE: int    = 16000
+CLIP_SAMPLES: int   = 32000   # 2 s window
+CHUNK_SAMPLES: int  = 8000    # 0.5 s hop
+DEFAULT_MODEL_PATH  = Path("models/saved_weights/dense_head_best.keras")
+DEFAULT_LOG_FILE    = Path("inference/detections.jsonl")
+DEFAULT_THRESHOLD   = 0.64
+DEFAULT_CHANNEL     = "gunshot-detection"
+DEFAULT_LOCATION    = "unknown"
+S3_PRESIGN_EXPIRY   = 3600   # seconds
+DEFAULT_DEMO_PORT   = 9999   # UDP port for --run / --demo_file IPC
+CHUNK_BYTES         = CHUNK_SAMPLES * 4  # float32 = 4 bytes per sample
+ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
+S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +132,14 @@ class AblyPublisher:
 
     def close(self):
         if self._client:
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._client.close(),
                 self._loop,
             )
+            try:
+                future.result(timeout=3)
+            except Exception as exc:
+                logger.warning("Ably close error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +160,7 @@ def _s3_upload(audio: np.ndarray, location: str, timestamp: str,
                bucket: str, region: str) -> str:
     import boto3
     wav_bytes = _audio_to_wav_bytes(audio)
-    safe_loc  = location.replace("/", "_")
+    safe_loc  = re.sub(r"[^\w-]", "_", location)
     key       = f"audio-snippets/{safe_loc}/{timestamp}.wav"
 
     s3 = boto3.client("s3", region_name=region)
@@ -179,6 +189,7 @@ def _alert(
     publisher: "AblyPublisher | None",
     s3_bucket: "str | None",
     aws_region: str,
+    executor:  ThreadPoolExecutor,
 ) -> None:
     record = {
         "event":       "gunshot_detected",
@@ -206,17 +217,20 @@ def _alert(
     publisher.publish("audio:detected", f"audio:detected:{location}")
     logger.info("Ably  →  audio:detected:%s", location)
 
-    # Ably: snippet message (upload async so we don't block the audio thread)
+    # Ably: snippet message — submitted to bounded thread pool so the audio
+    # thread is never blocked and thread count stays capped under sustained alerts.
     if s3_bucket:
+        snapshot = audio.copy()
+
         def _upload_and_publish():
             try:
-                url = _s3_upload(audio.copy(), location, timestamp, s3_bucket, aws_region)
+                url = _s3_upload(snapshot, location, timestamp, s3_bucket, aws_region)
                 publisher.publish("audio:snippet", f"audio:snippet:{location}:{url}")
                 logger.info("Ably  →  audio:snippet:%s:<url>", location)
             except Exception as exc:
                 logger.warning("S3 upload failed: %s", exc)
 
-        threading.Thread(target=_upload_and_publish, daemon=True).start()
+        executor.submit(_upload_and_publish)
 
 
 # ---------------------------------------------------------------------------
@@ -236,21 +250,23 @@ class AudioCapture:
         aws_region:  str,
         device:      "int | None",
     ):
-        self._yamnet    = yamnet_model
-        self._head      = head_model
-        self._threshold = threshold
-        self._location  = location
-        self._log_file  = log_file
-        self._publisher = publisher
-        self._s3_bucket = s3_bucket
-        self._aws_region = aws_region
-        self._device    = device
-        self._buffer    = np.zeros(CLIP_SAMPLES, dtype=np.float32)
-        self._lock      = threading.Lock()
-        self._stream    = None
+        self._yamnet          = yamnet_model
+        self._head            = head_model
+        self._threshold       = threshold
+        self._location        = location
+        self._log_file        = log_file
+        self._publisher       = publisher
+        self._s3_bucket       = s3_bucket
+        self._aws_region      = aws_region
+        self._device          = device
+        self._buffer          = np.zeros(CLIP_SAMPLES, dtype=np.float32)
+        self._lock            = threading.Lock()
+        self._stream          = None
+        self._last_alert_time = 0.0
+        self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
 
     def _process_chunk(self, chunk: np.ndarray) -> float:
-        """Core pipeline: update ring buffer, run inference, fire alert if triggered."""
+        """Core pipeline: update ring buffer, run inference, fire throttled alert if triggered."""
         with self._lock:
             self._buffer = np.roll(self._buffer, -CHUNK_SAMPLES)
             self._buffer[-CHUNK_SAMPLES:] = chunk
@@ -260,18 +276,22 @@ class AudioCapture:
         logger.debug("prob=%.4f", prob)
 
         if prob >= self._threshold:
-            ts = datetime.now(timezone.utc).isoformat()
-            _alert(
-                prob=prob,
-                audio=buf,
-                timestamp=ts,
-                threshold=self._threshold,
-                location=self._location,
-                log_file=self._log_file,
-                publisher=self._publisher,
-                s3_bucket=self._s3_bucket,
-                aws_region=self._aws_region,
-            )
+            now = time.monotonic()
+            if now - self._last_alert_time >= ALERT_COOLDOWN_SECS:
+                self._last_alert_time = now
+                ts = datetime.now(timezone.utc).isoformat()
+                _alert(
+                    prob=prob,
+                    audio=buf,
+                    timestamp=ts,
+                    threshold=self._threshold,
+                    location=self._location,
+                    log_file=self._log_file,
+                    publisher=self._publisher,
+                    s3_bucket=self._s3_bucket,
+                    aws_region=self._aws_region,
+                    executor=self._s3_executor,
+                )
         return prob
 
     def _callback(self, indata, frames, time_info, status):
@@ -309,12 +329,13 @@ class AudioCapture:
         if self._stream:
             self._stream.stop()
             self._stream.close()
+            self._stream = None
+        self._s3_executor.shutdown(wait=False)
 
     def run_demo_file_inprocess(self, file_path: Path) -> None:
         """Single-terminal demo: load file, play audio, run inference here."""
         import librosa
         import sounddevice as sd
-        import time
 
         logger.info("Loading %s ...", file_path)
         audio, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
@@ -343,9 +364,6 @@ class AudioCapture:
         Blocks until KeyboardInterrupt. The mic is NOT opened — all audio
         comes from whatever sends to 127.0.0.1:{port} (e.g. --demo_file).
         """
-        import socket
-        import time
-
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("127.0.0.1", port))
         sock.settimeout(1.0)          # allows Ctrl+C to be caught cleanly
@@ -358,23 +376,22 @@ class AudioCapture:
               f"  Feed a file:  python -m inference.live_inference --demo_file <file>\n"
               f"  Ctrl+C to stop.\n")
 
-        chunk_duration = CHUNK_SAMPLES / SAMPLE_RATE
-        while True:
-            try:
-                data, _ = sock.recvfrom(CHUNK_BYTES + 64)
-            except socket.timeout:
-                continue
+        try:
+            while True:
+                try:
+                    data, _ = sock.recvfrom(CHUNK_BYTES + 64)
+                except socket.timeout:
+                    continue
 
-            if len(data) != CHUNK_BYTES:
-                logger.warning("Unexpected chunk size %d bytes — skipping", len(data))
-                continue
+                if len(data) != CHUNK_BYTES:
+                    logger.warning("Unexpected chunk size %d bytes — skipping", len(data))
+                    continue
 
-            chunk = np.frombuffer(data, dtype=np.float32).copy()
-            prob  = self._process_chunk(chunk)
-            elapsed_s = time.monotonic()
-            print(f"  prob={prob:.4f}", end="\r")
-
-        sock.close()
+                chunk = np.frombuffer(data, dtype=np.float32).copy()
+                prob  = self._process_chunk(chunk)
+                print(f"  prob={prob:.4f}", end="\r")
+        finally:
+            sock.close()
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +400,6 @@ class AudioCapture:
 
 def _listener_reachable(port: int) -> bool:
     """Return True if a --run listener is accepting on 127.0.0.1:{port}."""
-    import socket
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(0.2)
@@ -408,8 +424,6 @@ def send_demo_file(file_path: Path, port: int) -> None:
     over UDP to the --run listener at 127.0.0.1:{port}.
     No model is loaded here — inference happens in the listener process.
     """
-    import socket
-    import time
     import librosa
     import sounddevice as sd
 
@@ -530,6 +544,7 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nStopped.")
         finally:
+            capture.stop()
             if publisher:
                 publisher.close()
             logger.info("Detections saved to: %s", args.log_file)
@@ -542,6 +557,7 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nStopped.")
         finally:
+            capture.stop()
             if publisher:
                 publisher.close()
             logger.info("Detections saved to: %s", args.log_file)

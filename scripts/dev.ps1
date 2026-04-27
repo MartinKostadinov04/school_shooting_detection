@@ -23,16 +23,20 @@ Pop-Location
 Write-Host "Starting audio inference pipeline ..."
 $audio = Start-Process python -ArgumentList "-m", "inference.live_inference", "--location", "Main Entrance" -PassThru -NoNewWindow
 
+Write-Host "Starting vision inference pipeline ..."
+$vision = Start-Process python -ArgumentList "-m", "vision.live_inference", "--location", "Main Entrance" -PassThru -NoNewWindow
+
 Write-Host ""
 Write-Host "Services running:"
 Write-Host "  API      -> http://localhost:8000  (PID $($api.Id))"
 Write-Host "  Frontend -> http://localhost:5173  (PID $($frontend.Id))"
 Write-Host "  Audio    -> background             (PID $($audio.Id))"
+Write-Host "  Vision   -> background             (PID $($vision.Id))"
 Write-Host ""
 Write-Host "Press Ctrl+C to stop all services."
 
 try {
-    Wait-Process -Id $api.Id, $frontend.Id, $audio.Id
+    Wait-Process -Id $api.Id, $frontend.Id, $audio.Id, $vision.Id
 } finally {
-    Stop-Process -Id $api.Id, $frontend.Id, $audio.Id -ErrorAction SilentlyContinue
+    Stop-Process -Id $api.Id, $frontend.Id, $audio.Id, $vision.Id -ErrorAction SilentlyContinue
 }
