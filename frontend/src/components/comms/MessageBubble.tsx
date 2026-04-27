@@ -5,6 +5,32 @@ import { cn } from "@/lib/utils";
 
 export function MessageBubble({ msg, viewerRole }: { msg: ChatMessage; viewerRole: "school" | "police" }) {
   if (msg.sender === "system") {
+    const isAlert = msg.text?.startsWith("🔴");
+    if (isAlert) {
+      const lines = msg.text!.split("\n");
+      return (
+        <div className="my-2 rounded-md border border-tactical-red/50 bg-tactical-red/10 p-3">
+          <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-tactical-red">
+            {lines[0]}
+          </div>
+          <div className="space-y-0.5 font-mono text-[11px]">
+            {lines.slice(1).map((line, i) => {
+              const [label, ...rest] = line.split(":");
+              const value = rest.join(":").trim();
+              return (
+                <div key={i} className="flex gap-2">
+                  <span className="w-24 shrink-0 text-muted-foreground">{label.trim()}</span>
+                  <span className="text-foreground">{value}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 text-right font-mono text-[10px] text-muted-foreground">
+            {format(new Date(msg.timestamp), "HH:mm:ss")}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="my-2 text-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
         — {msg.text} —

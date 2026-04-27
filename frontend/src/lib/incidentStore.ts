@@ -18,6 +18,7 @@ import type {
   Notification,
 } from "@/types";
 import { seedDevices, seedIncidents, seedMessages } from "./mockData";
+import { POLICE_SCHOOLS } from "./schools";
 
 const API_BASE = (import.meta as unknown as { env: Record<string, string> })
   .env?.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -210,6 +211,32 @@ export const useStore = create<StoreState>((set, get) => ({
     get()
       .devices.filter((d) => d.location === location && d.type === sensorType)
       .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
+
+    // Auto-alert to police channel on audio gunshot detection
+    if (source === "AUDIO-AI") {
+      const school = POLICE_SCHOOLS[0];
+      const mic = get().devices.find(
+        (d) => d.location === location && d.type === "microphone",
+      );
+      const timeStr = new Date(now).toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+      get().sendMessage({
+        sender: "system",
+        incidentId: id,
+        text: [
+          "🔴 AUTOMATED ALERT — Gunshot Detected",
+          `Time:        ${timeStr}`,
+          `School:      ${school.name}`,
+          `Address:     ${school.address}`,
+          `Sensor:      ${mic ? `${mic.name} (${mic.id})` : `unknown — ${location}`}`,
+          `Probability: ${(incident.probability ?? 0).toFixed(2)}`,
+        ].join("\n"),
+      });
+    }
 
     return incident;
   },
