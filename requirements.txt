@@ -19,6 +19,9 @@ mediapipe>=0.10.0         # pose-overlap constraint — FP reduction via hand de
 modal>=0.64.0
 boto3>=1.34.0
 
+# env
+python-dotenv>=1.0.0
+
 # api / backend
 pyyaml>=6.0
 requests>=2.31.0

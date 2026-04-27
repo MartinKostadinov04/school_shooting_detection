@@ -62,6 +62,9 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from pipeline.extract_embeddings import load_yamnet, extract_embedding
 from inference.live_inference import (
