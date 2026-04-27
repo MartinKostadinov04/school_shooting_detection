@@ -77,7 +77,7 @@ DEFAULT_MODEL_PATH  = Path("models/saved_weights/dense_head_best.keras")
 DEFAULT_LOG_FILE    = Path("inference/detections.jsonl")
 DEFAULT_THRESHOLD   = 0.64
 DEFAULT_CHANNEL     = "gunshot-detection"
-DEFAULT_LOCATION    = "unknown"
+DEFAULT_LOCATION    = "Cafeteria"
 S3_PRESIGN_EXPIRY   = 3600   # seconds
 DEFAULT_DEMO_PORT   = 9999   # UDP port for --run / --demo_file IPC
 CHUNK_BYTES         = CHUNK_SAMPLES * 4  # float32 = 4 bytes per sample

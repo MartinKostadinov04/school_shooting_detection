@@ -50,8 +50,18 @@ export async function getAblyClient(): Promise<Ably.Realtime | null> {
  *   audio:snippet:{location}:{url}
  *   video:detected:{location}:{conf}
  *   video:segment:{location}:{url}
+ *   video:negative:{location}
+ *   chat:message  data=JSON
  */
 export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent | null {
+  // Chat messages carry JSON payload, not a colon-delimited string
+  if (name === "chat:message") {
+    try {
+      const chatMsg = JSON.parse(typeof data === "string" ? data : "");
+      return { kind: "chat:message", location: chatMsg.incidentId ?? "", chatMsg, raw: typeof data === "string" ? data : "" };
+    } catch { return null; }
+  }
+
   const raw = typeof data === "string" ? data : name;
   if (typeof raw !== "string") return null;
   const parts = raw.split(":");
@@ -63,6 +73,8 @@ export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent |
     "audio:snippet",
     "video:detected",
     "video:segment",
+    "video:negative",
+    "chat:message",
   ];
   if (!allowed.includes(kind)) return null;
 
@@ -71,6 +83,12 @@ export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent |
     const url = rest.slice(1).join(":");
     if (!location || !url) return null;
     return { kind, location, url, raw };
+  }
+
+  if (kind === "video:negative") {
+    const location = rest.join(":");
+    if (!location) return null;
+    return { kind, location, raw };
   }
 
   // detected messages: {location}:{prob} — prob is the last segment

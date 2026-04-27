@@ -36,6 +36,8 @@ export function useAbly() {
   const ingestDetection = useStore((s) => s.ingestDetection);
   const attachMedia = useStore((s) => s.attachMedia);
   const markVideoConfirmed = useStore((s) => s.markVideoConfirmed);
+  const markVideoNegative = useStore((s) => s.markVideoNegative);
+  const receiveExternalMessage = useStore((s) => s.receiveExternalMessage);
 
   const handlerRef = useRef((evt: ParsedAblyEvent) => {
     if (evt.kind === "audio:detected") {
@@ -44,8 +46,12 @@ export function useAbly() {
       const existing = useStore
         .getState()
         .incidents.find((i) => i.location === evt.location && i.status !== "RESOLVED");
-      if (existing) markVideoConfirmed(evt.location);
+      if (existing) markVideoConfirmed(evt.location, evt.probability);
       else ingestDetection({ location: evt.location, source: "VIDEO-AI", probability: evt.probability });
+    } else if (evt.kind === "video:negative") {
+      markVideoNegative(evt.location);
+    } else if (evt.kind === "chat:message" && evt.chatMsg) {
+      receiveExternalMessage(evt.chatMsg);
     } else if (evt.kind === "audio:snippet" && evt.url) {
       attachMedia({ location: evt.location, kind: "audio", url: evt.url });
     } else if (evt.kind === "video:segment" && evt.url) {

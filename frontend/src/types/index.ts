@@ -100,13 +100,16 @@ export type AblyMessageName =
   | "audio:detected"
   | "audio:snippet"
   | "video:detected"
-  | "video:segment";
+  | "video:segment"
+  | "video:negative"
+  | "chat:message";
 
 export interface ParsedAblyEvent {
   kind: AblyMessageName;
   location: string;
   url?: string;
   probability?: number;
+  chatMsg?: ChatMessage;
   raw: string;
 }
 

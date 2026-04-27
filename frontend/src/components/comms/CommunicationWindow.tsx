@@ -24,7 +24,12 @@ export function CommunicationWindow({
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   const visible = filterIncidentId
-    ? messages.filter((m) => m.incidentId === filterIncidentId || m.sender === "system")
+    ? messages.filter(
+        (m) =>
+          m.incidentId === filterIncidentId ||
+          m.incidentId == null ||
+          m.sender === "system",
+      )
     : messages;
 
   useEffect(() => {

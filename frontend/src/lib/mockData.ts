@@ -196,34 +196,6 @@ const day = 24 * hour;
 
 export const seedIncidents: Incident[] = [
   {
-    id: "INC-20260421-004",
-    createdAt: new Date(now - 4 * min).toISOString(),
-    location: "Gymnasium",
-    type: "Gunshot",
-    source: "AUDIO-AI",
-    status: "NEW",
-    severity: "Critical",
-    probability: 0.92,
-    // TRANSFER: in production, `audioUrl` is populated by the `audio:snippet`
-    // Ably event published by the detection worker (signed URL pointing at
-    // the captured snippet in object storage). Left undefined here so the UI
-    // shows the "Awaiting snippet…" placeholder instead of demo audio.
-    timeline: [
-      {
-        id: "t1",
-        timestamp: new Date(now - 4 * min).toISOString(),
-        label: "AUDIO-AI detection",
-        detail: "Gunshot probability 0.92 at Gymnasium MIC-GY-01",
-      },
-      {
-        id: "t2",
-        timestamp: new Date(now - 3 * min).toISOString(),
-        label: "Snippet attached",
-        detail: "12s audio snippet captured",
-      },
-    ],
-  },
-  {
     id: "INC-20260421-003",
     createdAt: new Date(now - 2 * hour).toISOString(),
     location: "Cafeteria",

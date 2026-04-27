@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Bell } from "lucide-react";
 import { useStore } from "@/lib/incidentStore";
 import { ConnectionIndicator } from "@/components/ui/ConnectionIndicator";
@@ -6,7 +7,12 @@ import { design } from "@/config/design";
 
 export function NotificationBar() {
   const notifications = useStore((s) => s.notifications);
-  const connection = useStore((s) => s.connection);
+  const connection    = useStore((s) => s.connection);
+  const scrollRef     = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [notifications.length]);
 
   return (
     <aside
@@ -19,11 +25,16 @@ export function NotificationBar() {
           <h2 className="font-mono text-xs uppercase tracking-widest text-foreground">
             Live Feed
           </h2>
+          {notifications.length > 0 && (
+            <span className="rounded-full bg-tactical-amber px-1.5 py-0.5 font-mono text-[9px] font-bold text-background">
+              {notifications.length}
+            </span>
+          )}
         </div>
         <ConnectionIndicator state={connection} />
       </header>
 
-      <div className="flex-1 space-y-2 overflow-y-auto p-3">
+      <div ref={scrollRef} className="flex-1 space-y-2 overflow-y-auto p-3">
         {notifications.length === 0 && (
           <div className="rounded-md border border-dashed border-border p-6 text-center font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
             Awaiting signals…

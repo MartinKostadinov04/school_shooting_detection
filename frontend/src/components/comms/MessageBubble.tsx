@@ -5,12 +5,26 @@ import { cn } from "@/lib/utils";
 
 export function MessageBubble({ msg, viewerRole }: { msg: ChatMessage; viewerRole: "school" | "police" }) {
   if (msg.sender === "system") {
-    const isAlert = msg.text?.startsWith("🔴");
-    if (isAlert) {
+    const isRed   = msg.text?.startsWith("🔴");
+    const isGreen = msg.text?.startsWith("🟢");
+    const isGray  = msg.text?.startsWith("⚪");
+
+    if (isRed || isGreen || isGray) {
+      const borderBg = isRed
+        ? "border-tactical-red/50 bg-tactical-red/10"
+        : isGreen
+          ? "border-tactical-green/50 bg-tactical-green/10"
+          : "border-border bg-surface";
+      const labelColor = isRed
+        ? "text-tactical-red"
+        : isGreen
+          ? "text-tactical-green"
+          : "text-muted-foreground";
+
       const lines = msg.text!.split("\n");
       return (
-        <div className="my-2 rounded-md border border-tactical-red/50 bg-tactical-red/10 p-3">
-          <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-tactical-red">
+        <div className={cn("my-2 rounded-md border p-3", borderBg)}>
+          <div className={cn("mb-2 font-mono text-[10px] font-bold uppercase tracking-widest", labelColor)}>
             {lines[0]}
           </div>
           <div className="space-y-0.5 font-mono text-[11px]">

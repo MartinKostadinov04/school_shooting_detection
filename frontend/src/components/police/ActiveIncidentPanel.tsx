@@ -1,8 +1,11 @@
+import { useEffect, useRef, useState } from "react";
 import { format } from "date-fns";
-import { Volume2, Video } from "lucide-react";
+import { Volume2, Video, Play, Pause } from "lucide-react";
+import WaveSurfer from "wavesurfer.js";
 import type { Incident } from "@/types";
 import { SeverityBadge, SourceBadge, StatusPill } from "@/components/ui/StatusBadges";
 import { CommunicationWindow } from "@/components/comms/CommunicationWindow";
+import { cn } from "@/lib/utils";
 
 export function ActiveIncidentPanel({ incident }: { incident: Incident | null }) {
   if (!incident) {
@@ -66,13 +69,15 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
               </span>
             )}
           </div>
-          <Waveform />
           {incident.audioUrl ? (
-            <audio src={incident.audioUrl} controls className="mt-2 w-full" />
+            <AudioWaveform url={incident.audioUrl} />
           ) : (
-            <div className="mt-2 rounded-sm border border-dashed border-border p-3 text-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-              Awaiting snippet…
-            </div>
+            <>
+              <StaticWaveform />
+              <div className="mt-2 rounded-sm border border-dashed border-border p-3 text-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                Awaiting snippet…
+              </div>
+            </>
           )}
         </div>
 
@@ -86,13 +91,17 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
               </h3>
             </div>
             {incident.videoConfirmed && (
-              <span className="font-mono text-[10px] uppercase tracking-widest text-tactical-violet">
-                VIDEO-AI CONFIRMED
+              <span className="font-mono text-[10px] uppercase tracking-widest text-tactical-green">
+                CONFIRMED
               </span>
             )}
           </div>
           {incident.videoUrl ? (
-            <video src={incident.videoUrl} controls className="aspect-video w-full rounded-sm bg-black" />
+            <video
+              src={incident.videoUrl}
+              controls
+              className="aspect-video w-full rounded-sm bg-black"
+            />
           ) : (
             <div className="flex aspect-video items-center justify-center rounded-sm border border-dashed border-border bg-background/40 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
               No video segment
@@ -135,8 +144,88 @@ export function ActiveIncidentPanel({ incident }: { incident: Incident | null })
   );
 }
 
-function Waveform() {
-  // Decorative waveform — does not represent real audio.
+function AudioWaveform({ url }: { url: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WaveSurfer | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    setReady(false);
+    setError(false);
+    setPlaying(false);
+
+    const ws = WaveSurfer.create({
+      container: containerRef.current,
+      waveColor: "rgba(245,158,11,0.65)",
+      progressColor: "rgba(245,158,11,0.25)",
+      cursorColor: "rgba(245,158,11,0.8)",
+      cursorWidth: 1,
+      height: 64,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      normalize: true,
+    });
+
+    ws.load(url);
+    ws.on("ready", () => setReady(true));
+    ws.on("finish", () => setPlaying(false));
+    ws.on("error", () => setError(true));
+    wsRef.current = ws;
+
+    return () => {
+      ws.destroy();
+      wsRef.current = null;
+    };
+  }, [url]);
+
+  const toggle = () => {
+    if (!wsRef.current || !ready) return;
+    wsRef.current.playPause();
+    setPlaying((p) => !p);
+  };
+
+  return (
+    <div className="rounded-sm border border-border bg-background/40 p-2">
+      <div className="relative min-h-[64px]">
+        <div
+          ref={containerRef}
+          className={cn("transition-opacity duration-300", ready ? "opacity-100" : "opacity-0")}
+        />
+        {!ready && !error && (
+          <div className="absolute inset-0 flex items-center justify-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Loading waveform…
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Could not load audio
+          </div>
+        )}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={toggle}
+          disabled={!ready}
+          className="inline-flex items-center gap-1.5 rounded-sm border border-tactical-amber/40 px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-tactical-amber hover:bg-tactical-amber/10 disabled:opacity-40"
+        >
+          {playing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+          {playing ? "Pause" : "Play"}
+        </button>
+        {ready && (
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            audio snippet
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StaticWaveform() {
   const bars = Array.from({ length: 56 }, (_, i) => i);
   return (
     <div className="flex h-16 items-center gap-[2px] rounded-sm border border-border bg-background/40 px-2">
@@ -145,7 +234,7 @@ function Waveform() {
         return (
           <span
             key={i}
-            className="block w-[3px] rounded-full bg-tactical-amber/60"
+            className="block w-[3px] rounded-full bg-tactical-amber/25"
             style={{ height: `${h}px` }}
           />
         );

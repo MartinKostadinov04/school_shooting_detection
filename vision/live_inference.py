@@ -65,7 +65,7 @@ DEFAULT_THRESHOLD   = 0.6
 DEFAULT_IOU         = 0.45
 DEFAULT_IMG_SIZE    = 1280
 DEFAULT_CHANNEL     = "gunshot-detection"
-DEFAULT_LOCATION    = "unknown"
+DEFAULT_LOCATION    = "Cafeteria"
 S3_PRESIGN_EXPIRY   = 3600   # seconds
 ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
 S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
@@ -254,6 +254,8 @@ class VideoCapture:
         self._last_alert_time = 0.0
         self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
         self._stop_event      = threading.Event()
+        self._run_detected    = False
+        self._run_max_conf    = 0.0
 
     def _run_inference(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
         """Run YOLO on a single frame. Returns (max_confidence, annotated_frame)."""
@@ -275,6 +277,10 @@ class VideoCapture:
         max_conf, annotated = self._run_inference(frame)
         logger.debug("conf=%.4f", max_conf)
 
+        self._run_max_conf = max(self._run_max_conf, max_conf)
+        if max_conf >= self._threshold:
+            self._run_detected = True
+
         if max_conf > 0.0:
             now = time.monotonic()
             if now - self._last_alert_time >= ALERT_COOLDOWN_SECS:
@@ -294,6 +300,11 @@ class VideoCapture:
                 )
         return max_conf, annotated
 
+    @property
+    def result(self) -> tuple[bool, float]:
+        """(gun_detected, max_confidence) — valid after start() returns."""
+        return (self._run_detected, self._run_max_conf)
+
     def request_stop(self) -> None:
         """Signal the capture loop to exit cleanly (thread-safe)."""
         self._stop_event.set()
@@ -301,6 +312,8 @@ class VideoCapture:
     def start(self) -> None:
         """Open the video source and process frames until stopped or source ends."""
         self._stop_event.clear()
+        self._run_detected = False
+        self._run_max_conf = 0.0
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open video source: {self._source}")

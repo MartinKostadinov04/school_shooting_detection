@@ -15,6 +15,7 @@ export function SchoolMap({ readOnly = false }: { readOnly?: boolean }) {
   const [selected, setSelected] = useState<Device | null>(null);
   const [zoom, setZoom]         = useState(1);
   const [editMode, setEditMode] = useState(false);
+  const [imgAspect, setImgAspect] = useState<number | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
 
   const exitEdit = () => {
@@ -24,8 +25,13 @@ export function SchoolMap({ readOnly = false }: { readOnly?: boolean }) {
 
   return (
     <div
-      className="relative w-full overflow-hidden rounded-md border border-border bg-surface bg-tactical-grid"
-      style={{ height: design.layout.mapHeight }}
+      className="relative mx-auto overflow-hidden rounded-md border border-border bg-surface bg-tactical-grid"
+      style={{
+        height: design.layout.mapHeight,
+        width: imgAspect
+          ? `min(calc(${design.layout.mapHeight} * ${imgAspect}), 100%)`
+          : "100%",
+      }}
     >
       {/* controls */}
       <div className="absolute left-3 top-3 z-20 flex flex-col gap-1 rounded-md border border-border bg-popover/95 p-1 shadow backdrop-blur">
@@ -67,8 +73,11 @@ export function SchoolMap({ readOnly = false }: { readOnly?: boolean }) {
         <img
           src={floorplan}
           alt="School floor plan"
-          className="absolute inset-0 h-full w-full object-contain opacity-70 [filter:invert(1)_hue-rotate(180deg)_brightness(1.1)_contrast(0.9)]"
+          className="absolute inset-0 h-full w-full object-fill opacity-70 [filter:invert(1)_hue-rotate(180deg)_brightness(1.1)_contrast(0.9)]"
           draggable={false}
+          onLoad={(e) =>
+            setImgAspect(e.currentTarget.naturalWidth / e.currentTarget.naturalHeight)
+          }
         />
 
         {devices.map((d) => (

@@ -107,17 +107,26 @@ function SchoolDispatchPage() {
         <ConnectionIndicator state={connection} />
       </header>
 
-      <div className="flex flex-1 gap-3 overflow-hidden p-3">
-        <div className="shrink-0" style={{ width: design.layout.incidentFeedWidth }}>
-          <PoliceIncidentFeed
-            selectedId={selectedId}
-            onSelect={(i: Incident) => setSelectedId(i.id)}
-          />
+      <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3">
+        <div
+          className="mx-auto w-full"
+          style={{
+            maxWidth: `calc(100vw - ${design.layout.notificationBarWidth} - 2rem)`,
+          }}
+        >
+          <SchoolMap />
         </div>
 
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto">
-          <SchoolMap readOnly />
-          <ActiveIncidentPanel incident={selected} />
+        <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
+          <div className="shrink-0 overflow-y-auto" style={{ width: design.layout.incidentFeedWidth }}>
+            <PoliceIncidentFeed
+              selectedId={selectedId}
+              onSelect={(i: Incident) => setSelectedId(i.id)}
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <ActiveIncidentPanel incident={selected} />
+          </div>
         </div>
       </div>
     </div>

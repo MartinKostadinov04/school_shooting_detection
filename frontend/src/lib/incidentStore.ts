@@ -19,6 +19,7 @@ import type {
 } from "@/types";
 import { seedDevices, seedIncidents, seedMessages } from "./mockData";
 import { POLICE_SCHOOLS } from "./schools";
+import { getAblyClient, ABLY_CHANNEL } from "./ably";
 
 const API_BASE = (import.meta as unknown as { env: Record<string, string> })
   .env?.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -94,7 +95,8 @@ interface StoreState {
     url: string;
   }) => void;
 
-  markVideoConfirmed: (location: string) => void;
+  markVideoConfirmed: (location: string, conf?: number) => void;
+  markVideoNegative: (location: string) => void;
 
   reportManualIncident: (params: {
     location: string;
@@ -108,6 +110,7 @@ interface StoreState {
   dispatchUnit: (id: string) => void;
 
   sendMessage: (msg: Omit<ChatMessage, "id" | "timestamp">) => void;
+  receiveExternalMessage: (msg: ChatMessage) => void;
   setDeviceStatus: (id: string, status: Device["status"]) => void;
   setDevicePosition: (id: string, x: number, y: number) => void;
   resetDevicePositions: () => void;
@@ -297,7 +300,7 @@ export const useStore = create<StoreState>((set, get) => ({
     });
   },
 
-  markVideoConfirmed: (location) => {
+  markVideoConfirmed: (location, conf) => {
     set((state) => {
       const incidents = [...state.incidents];
       const idx = incidents.findIndex(
@@ -314,14 +317,16 @@ export const useStore = create<StoreState>((set, get) => ({
             id: `${inc.id}-vc-${Date.now()}`,
             timestamp: new Date().toISOString(),
             label: "Video AI confirmed",
-            detail: `Visual confirmation at ${location}`,
+            detail: conf !== undefined
+              ? `Visual confirmation at ${location} — conf ${conf.toFixed(2)}`
+              : `Visual confirmation at ${location}`,
           },
         ],
       };
 
       apiPatch(`/api/incidents/${inc.id}`, { video_confirmed: true });
 
-      // Also trigger cameras at this location (video confirmation = gun sighted)
+      // Trigger cameras at this location
       const ts = new Date().toISOString();
       const updatedDevices = state.devices.map((d) =>
         d.location === location && d.type === "camera"
@@ -332,7 +337,74 @@ export const useStore = create<StoreState>((set, get) => ({
         .filter((d) => d.location === location && d.type === "camera")
         .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
 
+      // Police follow-up: visual confirmation
+      const school = POLICE_SCHOOLS[0];
+      const cam = state.devices.find(
+        (d) => d.location === location && d.type === "camera",
+      );
+      const timeStr = new Date(ts).toLocaleTimeString("en-US", {
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+      });
+      get().sendMessage({
+        sender: "system",
+        incidentId: inc.id,
+        text: [
+          "🟢 VIDEO CONFIRMED — Gun Detected",
+          `Time:       ${timeStr}`,
+          `School:     ${school.name}`,
+          `Camera:     ${cam ? `${cam.name} (${cam.id})` : `unknown — ${location}`}`,
+          conf !== undefined ? `Confidence: ${conf.toFixed(2)}` : "",
+        ].filter(Boolean).join("\n"),
+      });
+
       return { incidents, devices: updatedDevices };
+    });
+  },
+
+  markVideoNegative: (location) => {
+    set((state) => {
+      const incidents = [...state.incidents];
+      const idx = incidents.findIndex(
+        (i) => i.location === location && i.status !== "RESOLVED",
+      );
+      if (idx === -1) return state;
+      const inc = incidents[idx];
+      incidents[idx] = {
+        ...inc,
+        timeline: [
+          ...inc.timeline,
+          {
+            id: `${inc.id}-vn-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            label: "Video scan negative",
+            detail: `No gun detected by camera at ${location}`,
+          },
+        ],
+      };
+
+      apiPatch(`/api/incidents/${inc.id}`, { video_negative: true });
+
+      // Police follow-up: no visual confirmation
+      const school = POLICE_SCHOOLS[0];
+      const cam = state.devices.find(
+        (d) => d.location === location && d.type === "camera",
+      );
+      const timeStr = new Date().toLocaleTimeString("en-US", {
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+      });
+      get().sendMessage({
+        sender: "system",
+        incidentId: inc.id,
+        text: [
+          "⚪ VIDEO SCAN NEGATIVE — No Gun Detected",
+          `Time:    ${timeStr}`,
+          `School:  ${school.name}`,
+          `Camera:  ${cam ? `${cam.name} (${cam.id})` : `unknown — ${location}`}`,
+          `Result:  No visual confirmation — audio alert only`,
+        ].join("\n"),
+      });
+
+      return { incidents };
     });
   },
 
@@ -439,12 +511,12 @@ export const useStore = create<StoreState>((set, get) => ({
 
   sendMessage: (msg) => {
     const incidentId = msg.incidentId;
-    set((state) => ({
-      messages: [
-        ...state.messages,
-        { ...msg, id: `m-${Date.now()}`, timestamp: new Date().toISOString() },
-      ],
-    }));
+    const fullMsg: ChatMessage = { ...msg, id: `m-${Date.now()}`, timestamp: new Date().toISOString() };
+    set((state) => ({ messages: [...state.messages, fullMsg] }));
+    // Cross-tab sync via Ably (fire-and-forget)
+    getAblyClient().then((client) => {
+      if (client) client.channels.get(ABLY_CHANNEL).publish("chat:message", JSON.stringify(fullMsg));
+    });
     if (incidentId) {
       apiPost(`/api/incidents/${incidentId}/messages`, {
         sender: msg.sender,
@@ -452,6 +524,13 @@ export const useStore = create<StoreState>((set, get) => ({
         incidentReport: msg.incidentReport,
       });
     }
+  },
+
+  receiveExternalMessage: (msg) => {
+    set((state) => {
+      if (state.messages.some((m) => m.id === msg.id)) return state;
+      return { messages: [...state.messages, msg] };
+    });
   },
 
   setDeviceStatus: (id, status) => {
