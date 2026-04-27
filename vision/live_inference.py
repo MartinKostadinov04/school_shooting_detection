@@ -253,6 +253,7 @@ class VideoCapture:
         self._cap             = None
         self._last_alert_time = 0.0
         self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
+        self._stop_event      = threading.Event()
 
     def _run_inference(self, frame: np.ndarray) -> tuple[float, np.ndarray]:
         """Run YOLO on a single frame. Returns (max_confidence, annotated_frame)."""
@@ -293,8 +294,13 @@ class VideoCapture:
                 )
         return max_conf, annotated
 
+    def request_stop(self) -> None:
+        """Signal the capture loop to exit cleanly (thread-safe)."""
+        self._stop_event.set()
+
     def start(self) -> None:
         """Open the video source and process frames until stopped or source ends."""
+        self._stop_event.clear()
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open video source: {self._source}")
@@ -309,7 +315,7 @@ class VideoCapture:
             print("\nPress Ctrl+C to stop ...\n")
 
         try:
-            while True:
+            while not self._stop_event.is_set():
                 ok, frame = self._cap.read()
                 if not ok:
                     logger.info("Video source ended.")
@@ -327,6 +333,7 @@ class VideoCapture:
             self.stop()
 
     def stop(self) -> None:
+        self._stop_event.set()
         if self._cap:
             self._cap.release()
             self._cap = None

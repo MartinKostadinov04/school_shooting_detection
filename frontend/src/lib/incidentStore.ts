@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   ConnectionState,
   Device,
+  DeviceStatus,
   Incident,
   IncidentSeverity,
   IncidentSource,
@@ -192,6 +193,24 @@ export const useStore = create<StoreState>((set, get) => ({
       probability: incident.probability,
     });
 
+    // Trigger the matching sensor type at the detected location
+    const sensorType = source === "AUDIO-AI" ? "microphone" : "camera";
+    const eventLabel =
+      source === "AUDIO-AI"
+        ? `Gunshot probability ${(incident.probability ?? 0).toFixed(2)}`
+        : "Gun detected by VIDEO-AI";
+    const triggeredAt = now;
+    set((state) => ({
+      devices: state.devices.map((d) =>
+        d.location === location && d.type === sensorType
+          ? { ...d, status: "triggered" as DeviceStatus, lastEvent: eventLabel, lastSeen: triggeredAt }
+          : d,
+      ),
+    }));
+    get()
+      .devices.filter((d) => d.location === location && d.type === sensorType)
+      .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
+
     return incident;
   },
 
@@ -260,7 +279,19 @@ export const useStore = create<StoreState>((set, get) => ({
       };
 
       apiPatch(`/api/incidents/${inc.id}`, { video_confirmed: true });
-      return { incidents };
+
+      // Also trigger cameras at this location (video confirmation = gun sighted)
+      const ts = new Date().toISOString();
+      const updatedDevices = state.devices.map((d) =>
+        d.location === location && d.type === "camera"
+          ? { ...d, status: "triggered" as DeviceStatus, lastEvent: "Gun detected by VIDEO-AI", lastSeen: ts }
+          : d,
+      );
+      state.devices
+        .filter((d) => d.location === location && d.type === "camera")
+        .forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "triggered" }));
+
+      return { incidents, devices: updatedDevices };
     });
   },
 
@@ -302,6 +333,26 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setIncidentStatus: (id, status) => {
+    // Reset triggered devices when an incident is resolved
+    if (status === "RESOLVED") {
+      const incident = get().incidents.find((i) => i.id === id);
+      if (incident) {
+        const toReset = get().devices.filter(
+          (d) => d.location === incident.location && d.status === "triggered",
+        );
+        if (toReset.length) {
+          set((state) => ({
+            devices: state.devices.map((d) =>
+              d.location === incident.location && d.status === "triggered"
+                ? { ...d, status: "online" as DeviceStatus }
+                : d,
+            ),
+          }));
+          toReset.forEach((d) => apiPatch(`/api/devices/${d.id}/status`, { status: "online" }));
+        }
+      }
+    }
+
     set((state) => ({
       incidents: state.incidents.map((i) =>
         i.id === id

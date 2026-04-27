@@ -49,6 +49,7 @@ import sys
 import threading
 import time
 import wave
+from typing import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,6 +250,7 @@ class AudioCapture:
         s3_bucket:   "str | None",
         aws_region:  str,
         device:      "int | None",
+        on_detection: "Callable[[float, str, str], None] | None" = None,
     ):
         self._yamnet          = yamnet_model
         self._head            = head_model
@@ -259,6 +261,7 @@ class AudioCapture:
         self._s3_bucket       = s3_bucket
         self._aws_region      = aws_region
         self._device          = device
+        self._on_detection    = on_detection
         self._buffer          = np.zeros(CLIP_SAMPLES, dtype=np.float32)
         self._lock            = threading.Lock()
         self._stream          = None
@@ -292,6 +295,8 @@ class AudioCapture:
                     aws_region=self._aws_region,
                     executor=self._s3_executor,
                 )
+                if self._on_detection:
+                    self._on_detection(prob, self._location, ts)
         return prob
 
     def _callback(self, indata, frames, time_info, status):
