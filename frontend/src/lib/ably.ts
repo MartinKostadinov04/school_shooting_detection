@@ -22,7 +22,9 @@ let client: Ably.Realtime | null = null;
 
 async function fetchAblyToken(): Promise<Ably.TokenRequest | null> {
   try {
-    const res = await fetch(`${API_BASE}/api/ably-token`);
+    const res = await fetch(`${API_BASE}/api/ably-token`, {
+      signal: AbortSignal.timeout(2000),   // don't wait more than 2s for the backend
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch {
