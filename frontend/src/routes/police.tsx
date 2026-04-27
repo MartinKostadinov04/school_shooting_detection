@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useChildMatches } from "@tanstack/react-router";
 import { Eye, Building2, ChevronRight, Radio, Users, Cpu } from "lucide-react";
 import { useStore } from "@/lib/incidentStore";
 import { ConnectionIndicator } from "@/components/ui/ConnectionIndicator";
@@ -19,6 +19,9 @@ export const Route = createFileRoute("/police")({
 });
 
 function PoliceSchoolsPage() {
+  const childMatches = useChildMatches();
+  if (childMatches.length > 0) return <Outlet />;
+
   const incidents = useStore((s) => s.incidents);
   const connection = useStore((s) => s.connection);
   const activeCount = incidents.filter((i) => i.status !== "RESOLVED").length;
