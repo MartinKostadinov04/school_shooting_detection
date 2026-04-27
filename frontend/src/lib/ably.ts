@@ -15,6 +15,9 @@ export const ABLY_CHANNEL = "gunshot-detection";
 const API_BASE = (import.meta as unknown as { env: Record<string, string> })
   .env?.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+const DIRECT_KEY = (import.meta as unknown as { env: Record<string, string> })
+  .env?.VITE_ABLY_API_KEY ?? "";
+
 let client: Ably.Realtime | null = null;
 
 async function fetchAblyToken(): Promise<Ably.TokenRequest | null> {
@@ -29,18 +32,29 @@ async function fetchAblyToken(): Promise<Ably.TokenRequest | null> {
 
 export async function getAblyClient(): Promise<Ably.Realtime | null> {
   if (client) return client;
+
+  // Prefer token-auth via backend (production). Fall back to direct key for
+  // local dev when the FastAPI backend isn't running.
   const tokenRequest = await fetchAblyToken();
-  if (!tokenRequest) return null;
-  client = new Ably.Realtime({
-    authCallback: (_data, callback) => {
-      // Re-fetch token on each renewal cycle
-      fetchAblyToken().then((t) => {
-        if (t) callback(null, t);
-        else callback(new Error("token fetch failed"), null);
-      });
-    },
-    clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}`,
-  });
+  if (tokenRequest) {
+    client = new Ably.Realtime({
+      authCallback: (_data, callback) => {
+        fetchAblyToken().then((t) => {
+          if (t) callback(null, t);
+          else callback(new Error("token fetch failed"), null);
+        });
+      },
+      clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}`,
+    });
+  } else if (DIRECT_KEY) {
+    client = new Ably.Realtime({
+      key: DIRECT_KEY,
+      clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}`,
+    });
+  } else {
+    return null;
+  }
+
   return client;
 }
 
