@@ -106,6 +106,7 @@ export interface ParsedAblyEvent {
   kind: AblyMessageName;
   location: string;
   url?: string;
+  probability?: number;
   raw: string;
 }
 

@@ -198,9 +198,9 @@ def _alert(
     if publisher is None:
         return
 
-    # Ably: detection message
-    publisher.publish("video:detected", f"video:detected:{location}")
-    logger.info("Ably  ->  video:detected:%s", location)
+    # Ably: detection message (format: video:detected:{location}:{conf})
+    publisher.publish("video:detected", f"video:detected:{location}:{conf:.4f}")
+    logger.info("Ably  ->  video:detected:%s  conf=%.4f", location, conf)
 
     # Ably: frame snapshot -- submitted to bounded thread pool so the capture
     # loop is never blocked and thread count stays capped under rapid detection.

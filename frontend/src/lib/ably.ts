@@ -46,9 +46,9 @@ export async function getAblyClient(): Promise<Ably.Realtime | null> {
 
 /**
  * Parse messages of the form:
- *   audio:detected:{location}
+ *   audio:detected:{location}:{prob}
  *   audio:snippet:{location}:{url}
- *   video:detected:{location}
+ *   video:detected:{location}:{conf}
  *   video:segment:{location}:{url}
  */
 export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent | null {
@@ -72,7 +72,13 @@ export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent |
     if (!location || !url) return null;
     return { kind, location, url, raw };
   }
-  const location = rest.join(":");
+
+  // detected messages: {location}:{prob} — prob is the last segment
+  const probStr = rest[rest.length - 1];
+  const prob = rest.length >= 2 ? parseFloat(probStr) : NaN;
+  const location = !isNaN(prob)
+    ? rest.slice(0, -1).join(":")
+    : rest.join(":");
   if (!location) return null;
-  return { kind, location, raw };
+  return { kind, location, probability: !isNaN(prob) ? prob : undefined, raw };
 }

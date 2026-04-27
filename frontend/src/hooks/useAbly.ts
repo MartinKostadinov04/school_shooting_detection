@@ -39,13 +39,13 @@ export function useAbly() {
 
   const handlerRef = useRef((evt: ParsedAblyEvent) => {
     if (evt.kind === "audio:detected") {
-      ingestDetection({ location: evt.location, source: "AUDIO-AI" });
+      ingestDetection({ location: evt.location, source: "AUDIO-AI", probability: evt.probability });
     } else if (evt.kind === "video:detected") {
       const existing = useStore
         .getState()
         .incidents.find((i) => i.location === evt.location && i.status !== "RESOLVED");
       if (existing) markVideoConfirmed(evt.location);
-      else ingestDetection({ location: evt.location, source: "VIDEO-AI" });
+      else ingestDetection({ location: evt.location, source: "VIDEO-AI", probability: evt.probability });
     } else if (evt.kind === "audio:snippet" && evt.url) {
       attachMedia({ location: evt.location, kind: "audio", url: evt.url });
     } else if (evt.kind === "video:segment" && evt.url) {

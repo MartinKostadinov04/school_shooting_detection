@@ -180,7 +180,7 @@ export const useStore = create<StoreState>((set, get) => ({
       probability: incident.probability,
       source,
       incidentId: id,
-      message: `${source} detected ${incident.type.toLowerCase()} at ${location}`,
+      message: `${source} detected ${incident.type.toLowerCase()} at ${location} — prob ${(incident.probability ?? 0).toFixed(2)}`,
     });
 
     // Persist to backend (fire-and-forget)

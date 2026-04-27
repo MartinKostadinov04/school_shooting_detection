@@ -214,9 +214,9 @@ def _alert(
     if publisher is None:
         return
 
-    # Ably: detection message
-    publisher.publish("audio:detected", f"audio:detected:{location}")
-    logger.info("Ably  →  audio:detected:%s", location)
+    # Ably: detection message (format: audio:detected:{location}:{prob})
+    publisher.publish("audio:detected", f"audio:detected:{location}:{prob:.4f}")
+    logger.info("Ably  →  audio:detected:%s  prob=%.4f", location, prob)
 
     # Ably: snippet message — submitted to bounded thread pool so the audio
     # thread is never blocked and thread count stays capped under sustained alerts.
