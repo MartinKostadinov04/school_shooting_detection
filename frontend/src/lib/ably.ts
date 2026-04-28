@@ -43,7 +43,7 @@ export async function getAblyClient(): Promise<Ably.Realtime | null> {
       authCallback: (_data, callback) => {
         fetchAblyToken().then((t) => {
           if (t) callback(null, t);
-          else callback(new Error("token fetch failed"), null);
+          else callback("token fetch failed", null);
         });
       },
       clientId: `tacticaleye-${Math.random().toString(36).slice(2, 8)}`,
@@ -64,7 +64,10 @@ export async function getAblyClient(): Promise<Ably.Realtime | null> {
  * Parse messages of the form:
  *   audio:detected:{location}:{prob}
  *   audio:snippet:{location}:{url}
- *   video:detected:{location}:{conf}
+ *   video:detected:{location}:{conf}            (legacy)
+ *   video:detected:{location}:{conf}:{count}    (current — count is the
+ *                                                peak # of simultaneously
+ *                                                visible guns)
  *   video:segment:{location}:{url}
  *   video:negative:{location}
  *   chat:message  data=JSON
@@ -107,12 +110,23 @@ export function parseAblyMessage(name: string, data: unknown): ParsedAblyEvent |
     return { kind, location, raw };
   }
 
-  // detected messages: {location}:{prob} — prob is the last segment
-  const probStr = rest[rest.length - 1];
-  const prob = rest.length >= 2 ? parseFloat(probStr) : NaN;
-  const location = !isNaN(prob)
-    ? rest.slice(0, -1).join(":")
-    : rest.join(":");
+  // detected messages: peel numeric tails off the right.
+  //   `audio:detected:Loc:0.92`        → tails=[0.92]            → prob=0.92
+  //   `video:detected:Loc:0.71:3`      → tails=[0.71, 3]         → prob=0.71, count=3
+  // Locations cannot contain a `:` in our publisher contract, so any token
+  // that parses as a number IS a tail value.
+  const remaining = [...rest];
+  const tails: number[] = [];
+  while (remaining.length) {
+    const tail = remaining[remaining.length - 1];
+    const n = parseFloat(tail);
+    if (!Number.isFinite(n) || tail.trim() === "") break;
+    tails.unshift(n);
+    remaining.pop();
+  }
+  const probability = tails.length >= 1 ? tails[0] : undefined;
+  const count       = tails.length >= 2 ? Math.round(tails[1]) : undefined;
+  const location    = remaining.join(":");
   if (!location) return null;
-  return { kind, location, probability: !isNaN(prob) ? prob : undefined, raw };
+  return { kind, location, probability, count, raw };
 }

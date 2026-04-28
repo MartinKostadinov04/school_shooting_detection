@@ -86,6 +86,8 @@ interface StoreState {
     location: string;
     source: Extract<IncidentSource, "AUDIO-AI" | "VIDEO-AI">;
     probability?: number;
+    /** Only set on VIDEO-AI detections — peak # of simultaneously visible guns */
+    gunCount?: number;
   }) => Incident;
 
   /** Attach a media URL (snippet or segment) to most recent matching incident */
@@ -95,7 +97,7 @@ interface StoreState {
     url: string;
   }) => void;
 
-  markVideoConfirmed: (location: string, conf?: number) => void;
+  markVideoConfirmed: (location: string, conf?: number, count?: number) => void;
   markVideoNegative: (location: string) => void;
 
   reportManualIncident: (params: {
@@ -173,7 +175,7 @@ export const useStore = create<StoreState>((set, get) => ({
   addNotification: (n) =>
     set((state) => ({ notifications: [n, ...state.notifications].slice(0, 50) })),
 
-  ingestDetection: ({ location, source, probability }) => {
+  ingestDetection: ({ location, source, probability, gunCount }) => {
     const id = get().nextIncidentId();
     const now = new Date().toISOString();
     const incident: Incident = {
@@ -185,12 +187,15 @@ export const useStore = create<StoreState>((set, get) => ({
       status: "NEW",
       severity: "Critical",
       probability: probability ?? (source === "AUDIO-AI" ? 0.88 : 0.81),
+      gunCount: source === "VIDEO-AI" ? gunCount : undefined,
       timeline: [
         {
           id: `${id}-t1`,
           timestamp: now,
           label: `${source} detection`,
-          detail: `Detection at ${location}`,
+          detail: source === "VIDEO-AI" && typeof gunCount === "number"
+            ? `Detection at ${location} — ${gunCount} ${gunCount === 1 ? "gun" : "guns"} visible`
+            : `Detection at ${location}`,
         },
       ],
     };
@@ -215,6 +220,7 @@ export const useStore = create<StoreState>((set, get) => ({
       source,
       severity: "Critical",
       probability: incident.probability,
+      gun_count: incident.gunCount,
     });
 
     // Trigger the matching sensor type at the detected location
@@ -306,7 +312,7 @@ export const useStore = create<StoreState>((set, get) => ({
     });
   },
 
-  markVideoConfirmed: (location, conf) => {
+  markVideoConfirmed: (location, conf, count) => {
     set((state) => {
       const incidents = [...state.incidents];
       const idx = incidents.findIndex(
@@ -314,23 +320,32 @@ export const useStore = create<StoreState>((set, get) => ({
       );
       if (idx === -1) return state;
       const inc = incidents[idx];
+      const detailParts: string[] = [];
+      if (conf !== undefined) detailParts.push(`conf ${conf.toFixed(2)}`);
+      if (typeof count === "number") {
+        detailParts.push(`${count} ${count === 1 ? "gun" : "guns"} visible`);
+      }
       incidents[idx] = {
         ...inc,
         videoConfirmed: true,
+        gunCount: typeof count === "number" ? count : inc.gunCount,
         timeline: [
           ...inc.timeline,
           {
             id: `${inc.id}-vc-${Date.now()}`,
             timestamp: new Date().toISOString(),
             label: "Video AI confirmed",
-            detail: conf !== undefined
-              ? `Visual confirmation at ${location} — conf ${conf.toFixed(2)}`
+            detail: detailParts.length
+              ? `Visual confirmation at ${location} — ${detailParts.join(", ")}`
               : `Visual confirmation at ${location}`,
           },
         ],
       };
 
-      apiPatch(`/api/incidents/${inc.id}`, { video_confirmed: true });
+      apiPatch(`/api/incidents/${inc.id}`, {
+        video_confirmed: true,
+        gun_count: typeof count === "number" ? count : undefined,
+      });
 
       // Trigger cameras at this location
       const ts = new Date().toISOString();
@@ -360,6 +375,9 @@ export const useStore = create<StoreState>((set, get) => ({
           `School:     ${school.name}`,
           `Camera:     ${cam ? `${cam.name} (${cam.id})` : `unknown — ${location}`}`,
           conf !== undefined ? `Confidence: ${conf.toFixed(2)}` : "",
+          typeof count === "number"
+            ? `Guns:       ${count}`
+            : "",
         ].filter(Boolean).join("\n"),
       });
 

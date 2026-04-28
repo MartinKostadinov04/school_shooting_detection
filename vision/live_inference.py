@@ -83,6 +83,8 @@ try:
 except ImportError:
     _MEDIAPIPE_AVAILABLE = False
 
+from inference.config import YOLO_WEIGHTS_PATH
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -94,7 +96,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL_PATH  = Path("YOLO_hugging-main/best.pt")
+DEFAULT_MODEL_PATH  = YOLO_WEIGHTS_PATH
 DEFAULT_LOG_FILE    = Path("vision/detections.jsonl")
 DEFAULT_THRESHOLD   = 0.6
 DEFAULT_IOU         = 0.45
@@ -213,6 +215,8 @@ def _s3_upload_frame(frame: np.ndarray, location: str, timestamp: str,
 
 def _alert(
     conf:       float,
+    count:      int,
+    boxes:      list,
     frame:      np.ndarray,
     timestamp:  str,
     threshold:  float,
@@ -223,16 +227,35 @@ def _alert(
     aws_region: str,
     executor:   ThreadPoolExecutor,
 ) -> None:
+    """
+    Fire a single gun-detection alert. ``count`` is the number of boxes that
+    survived the pose+threshold filter on the alerting frame; ``boxes`` is the
+    list of ``(x1, y1, x2, y2, conf)`` tuples for those survivors.
+    """
     record = {
         "event":       "gun_detected",
         "timestamp":   timestamp,
         "confidence":  round(float(conf), 4),
+        "count":       int(count),
+        "boxes": [
+            {
+                "x1":   round(float(b[0]), 2),
+                "y1":   round(float(b[1]), 2),
+                "x2":   round(float(b[2]), 2),
+                "y2":   round(float(b[3]), 2),
+                "conf": round(float(b[4]), 4),
+            }
+            for b in boxes
+        ],
         "threshold":   threshold,
         "location":    location,
     }
 
     # Console
-    print(f"\n\U0001f534  GUN DETECTED  conf={conf:.3f}  loc={location}  [{timestamp}]")
+    print(
+        f"\n\U0001f534  GUN DETECTED  conf={conf:.3f}  count={count}  "
+        f"loc={location}  [{timestamp}]"
+    )
 
     # JSONL log
     try:
@@ -245,9 +268,14 @@ def _alert(
     if publisher is None:
         return
 
-    # Ably: detection message (format: video:detected:{location}:{conf})
-    publisher.publish("video:detected", f"video:detected:{location}:{conf:.4f}")
-    logger.info("Ably  ->  video:detected:%s  conf=%.4f", location, conf)
+    # Ably: detection message — appended count keeps the format backwards
+    # compatible (existing parsers strip a single numeric tail).
+    # Format: video:detected:{location}:{conf}:{count}
+    publisher.publish(
+        "video:detected",
+        f"video:detected:{location}:{conf:.4f}:{count}",
+    )
+    logger.info("Ably  ->  video:detected:%s  conf=%.4f  count=%d", location, conf, count)
 
     # Ably: frame snapshot -- submitted to bounded thread pool so the capture
     # loop is never blocked and thread count stays capped under rapid detection.
@@ -306,10 +334,14 @@ def _hand_boxes(frame_rgb: np.ndarray, hands_detector) -> List[Tuple[int, int, i
     return boxes
 
 
-def _gun_box_has_hand(gun_box: Tuple[float, float, float, float],
+def _gun_box_has_hand(gun_box: Tuple[float, float, float, float, float],
                       hand_boxes: List[Tuple[int, int, int, int]]) -> bool:
-    """True if the gun bounding box overlaps any hand region."""
-    gx1, gy1, gx2, gy2 = gun_box
+    """True if the gun bounding box overlaps any hand region.
+
+    ``gun_box`` is ``(x1, y1, x2, y2, conf)`` — only the spatial coords are
+    used here, but accepting the full tuple keeps callers from re-packing.
+    """
+    gx1, gy1, gx2, gy2 = gun_box[0], gun_box[1], gun_box[2], gun_box[3]
     for hx1, hy1, hx2, hy2 in hand_boxes:
         if gx1 < hx2 and gx2 > hx1 and gy1 < hy2 and gy2 > hy1:
             return True
@@ -358,6 +390,12 @@ class VideoCapture:
         self._stop_event      = threading.Event()
         self._run_detected    = False
         self._run_max_conf    = 0.0
+        self._run_max_count   = 0   # peak number of simultaneously visible guns
+
+        # Annotated-MP4 writer state — populated lazily by start() when the
+        # source is a file path. None for webcam captures.
+        self._annotated_writer: "cv2.VideoWriter | None" = None
+        self._annotated_path:   "Path | None"            = None
 
         # --- Layer 1: temporal k-of-n gate ---
         self._kofn_k          = kofn_k
@@ -399,23 +437,40 @@ class VideoCapture:
     # ------------------------------------------------------------------
 
     def _run_inference_standard(self, frame: np.ndarray) -> Tuple[float, np.ndarray, list]:
-        """Standard single-shot YOLO inference. Returns (max_conf, annotated, raw_boxes)."""
+        """
+        Standard single-shot YOLO inference.
+        Returns (max_conf, annotated, raw_boxes) where each raw_boxes entry is
+        ``(x1, y1, x2, y2, conf)`` — confidence is preserved per-box so the
+        downstream count/filter logic can keep the right max after dropping
+        boxes via the pose filter.
+        """
         results   = self._yolo.predict(
             source=frame, conf=self._threshold, iou=self._iou,
             imgsz=self._imgsz, verbose=False,
         )
         result    = results[0]
-        annotated = result.plot()
+        annotated = result.plot()                         # ultralytics draws box+label+conf
         boxes     = result.boxes
-        raw_boxes = (
-            [tuple(b.xyxy[0].tolist()) for b in boxes]  # [(x1,y1,x2,y2), ...]
-            if len(boxes) > 0 else []
-        )
-        max_conf  = float(boxes.conf.max()) if len(boxes) > 0 else 0.0
+        if len(boxes) > 0:
+            xyxy_arr = boxes.xyxy.cpu().numpy()           # (N, 4)
+            conf_arr = boxes.conf.cpu().numpy()           # (N,)
+            raw_boxes = [
+                (float(x1), float(y1), float(x2), float(y2), float(c))
+                for (x1, y1, x2, y2), c in zip(xyxy_arr, conf_arr)
+            ]
+            max_conf = float(conf_arr.max())
+        else:
+            raw_boxes = []
+            max_conf  = 0.0
         return max_conf, annotated, raw_boxes
 
     def _run_inference_sahi(self, frame: np.ndarray) -> Tuple[float, np.ndarray, list]:
-        """SAHI tiled inference — better recall on small/distant guns."""
+        """
+        SAHI tiled inference — better recall on small/distant guns.
+        Returns ``(max_conf, annotated, raw_boxes)`` with boxes as
+        ``(x1, y1, x2, y2, conf)``. SAHI does not provide a built-in plot()
+        equivalent so we draw the boxes + per-box confidence labels here.
+        """
         import PIL.Image
         pil_img = PIL.Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         result  = get_sliced_prediction(
@@ -427,19 +482,28 @@ class VideoCapture:
             overlap_width_ratio=SAHI_OVERLAP,
             verbose=0,
         )
-        raw_boxes = []
+        raw_boxes: list[tuple[float, float, float, float, float]] = []
         max_conf  = 0.0
         for pred in result.object_prediction_list:
-            if pred.score.value >= self._threshold:
+            score = float(pred.score.value)
+            if score >= self._threshold:
                 bb = pred.bbox
-                raw_boxes.append((bb.minx, bb.miny, bb.maxx, bb.maxy))
-                max_conf = max(max_conf, pred.score.value)
+                raw_boxes.append(
+                    (float(bb.minx), float(bb.miny), float(bb.maxx), float(bb.maxy), score)
+                )
+                if score > max_conf:
+                    max_conf = score
 
-        # Draw boxes on frame for display / S3 upload
+        # Draw bounding boxes + conf labels on frame for display / annotated MP4 / S3 upload
         annotated = frame.copy()
-        for x1, y1, x2, y2 in raw_boxes:
-            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)),
-                          (0, 0, 255), 2)
+        for x1, y1, x2, y2, c in raw_boxes:
+            p1 = (int(x1), int(y1))
+            p2 = (int(x2), int(y2))
+            cv2.rectangle(annotated, p1, p2, (0, 0, 255), 2)
+            cv2.putText(
+                annotated, f"gun {c:.2f}", (p1[0], max(p1[1] - 6, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA,
+            )
 
         return max_conf, annotated, raw_boxes
 
@@ -450,38 +514,53 @@ class VideoCapture:
     def _process_frame(self, frame: np.ndarray) -> Tuple[float, np.ndarray]:
         """
         Full three-layer FP-reduction pipeline.
-        Returns (reported_conf, annotated_frame).
-        reported_conf > 0 only when all layers pass.
+        Returns ``(reported_conf, annotated_frame)``. ``reported_conf`` is the
+        post-pose-filter maximum confidence of any surviving box; it is > 0
+        only when at least one box clears every layer.
         """
-        # Layer 2: SAHI vs standard inference
+        # Layer 2: SAHI vs standard inference. raw_boxes is a list of
+        # (x1, y1, x2, y2, conf) tuples — keeping conf alongside the box lets
+        # the pose filter recompute the max correctly after dropping boxes.
         if self._use_sahi:
             max_conf, annotated, raw_boxes = self._run_inference_sahi(frame)
         else:
             max_conf, annotated, raw_boxes = self._run_inference_standard(frame)
 
-        # Layer 3: pose-overlap filter — discard boxes with no associated hand
+        # Layer 3: pose-overlap filter — discard boxes with no associated hand.
+        # ``filtered`` is the authoritative survivor list; everything below
+        # (count, max_conf, alert payload) is computed from it.
+        filtered: list = list(raw_boxes)
         if self._use_pose and raw_boxes and self._hand_detect is not None:
-            frame_rgb  = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h_boxes    = _hand_boxes(frame_rgb, self._hand_detect)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h_boxes   = _hand_boxes(frame_rgb, self._hand_detect)
             if h_boxes:
-                # Keep only gun boxes that overlap a hand region
                 filtered = [b for b in raw_boxes if _gun_box_has_hand(b, h_boxes)]
                 if not filtered:
-                    logger.debug("pose-overlap: all %d boxes suppressed (no hand overlap)", len(raw_boxes))
-                    max_conf = 0.0
-                else:
-                    max_conf = max_conf  # already the max of surviving boxes
+                    logger.debug(
+                        "pose-overlap: all %d boxes suppressed (no hand overlap)",
+                        len(raw_boxes),
+                    )
             else:
-                # No hands detected in frame at all — suppress everything
-                logger.debug("pose-overlap: no hands in frame, suppressing %d boxes", len(raw_boxes))
-                max_conf = 0.0
+                # No hands detected in frame at all — suppress everything.
+                logger.debug(
+                    "pose-overlap: no hands in frame, suppressing %d boxes",
+                    len(raw_boxes),
+                )
+                filtered = []
+
+        # Recompute count + max_conf from the survivor set.
+        count    = len(filtered)
+        max_conf = max((b[4] for b in filtered), default=0.0)
 
         # Layer 1: temporal k-of-n gate
         self._detection_window.append(max_conf >= self._threshold)
         gate_open = sum(self._detection_window) >= self._kofn_k
 
-        # Track run-level stats regardless of gate
-        self._run_max_conf = max(self._run_max_conf, max_conf)
+        # Track run-level stats regardless of gate. ``max_count`` is the peak
+        # number of simultaneously visible guns across the whole run — that's
+        # what we report to the police/school view.
+        self._run_max_conf  = max(self._run_max_conf, max_conf)
+        self._run_max_count = max(self._run_max_count, count)
         if gate_open and max_conf >= self._threshold:
             self._run_detected = True
 
@@ -492,6 +571,8 @@ class VideoCapture:
                 ts = datetime.now(timezone.utc).isoformat()
                 _alert(
                     conf=max_conf,
+                    count=count,
+                    boxes=filtered,
                     frame=annotated,
                     timestamp=ts,
                     threshold=self._threshold,
@@ -503,29 +584,81 @@ class VideoCapture:
                     executor=self._s3_executor,
                 )
 
-        return max_conf if gate_open else 0.0, annotated
+        return (max_conf if gate_open else 0.0), annotated
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     @property
-    def result(self) -> Tuple[bool, float]:
-        """(gun_detected, max_confidence) — valid after start() returns."""
-        return (self._run_detected, self._run_max_conf)
+    def result(self) -> Tuple[bool, float, int]:
+        """``(gun_detected, max_confidence, max_count)`` — valid after start() returns.
+
+        ``max_count`` is the peak number of simultaneously visible guns
+        across the whole run, not the count at any single alert frame.
+        """
+        return (self._run_detected, self._run_max_conf, self._run_max_count)
+
+    @property
+    def annotated_path(self) -> "Path | None":
+        """Path to the annotated MP4 written during the last run, or None.
+
+        ``None`` is returned for webcam captures (no on-disk source) or when
+        the writer could not be opened (codec missing, permission denied,
+        etc.). Callers should fall back to the original input in that case.
+        """
+        return self._annotated_path
 
     def request_stop(self) -> None:
         self._stop_event.set()
 
     def start(self) -> None:
-        """Open the video source and process frames until stopped or source ends."""
+        """Open the video source and process frames until stopped or source ends.
+
+        When the source is an on-disk file path we also open a ``cv2.VideoWriter``
+        and persist every annotated frame to ``<input>.annotated.mp4`` next to
+        the source. The annotated video has bounding boxes + per-box confidence
+        labels baked into the pixels, so the police/school front-end can show
+        the model's detections by playing this file back through a stock HTML
+        ``<video>`` element with no canvas overlay required.
+        """
         self._stop_event.clear()
-        self._run_detected = False
-        self._run_max_conf = 0.0
+        self._run_detected     = False
+        self._run_max_conf     = 0.0
+        self._run_max_count    = 0
+        self._annotated_writer = None
+        self._annotated_path   = None
         self._detection_window.clear()
         self._cap = cv2.VideoCapture(self._source)
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open video source: {self._source}")
+
+        # Open the annotated-MP4 writer only for on-disk sources. For webcam
+        # captures (source=0) we skip it — there's no natural file location.
+        if isinstance(self._source, str):
+            try:
+                src    = Path(self._source)
+                dest   = src.with_name(f"{src.stem}.annotated.mp4")
+                fps    = float(self._cap.get(cv2.CAP_PROP_FPS) or 30.0)
+                width  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                if width > 0 and height > 0:
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(str(dest), fourcc, fps, (width, height))
+                    if writer.isOpened():
+                        self._annotated_writer = writer
+                        self._annotated_path   = dest
+                        logger.info(
+                            "Annotated MP4 writer  ->  %s  (%dx%d @ %.1f fps)",
+                            dest, width, height, fps,
+                        )
+                    else:
+                        logger.warning(
+                            "Could not open VideoWriter for %s — annotated MP4 disabled",
+                            dest,
+                        )
+            except Exception:
+                logger.exception("Failed to set up annotated MP4 writer; continuing without it")
 
         logger.info(
             "Capturing  source=%s  threshold=%.2f  iou=%.2f  imgsz=%d  location=%s",
@@ -541,6 +674,17 @@ class VideoCapture:
                     logger.info("Video source ended.")
                     break
                 conf, annotated = self._process_frame(frame)
+                # Persist the annotated frame regardless of whether the gate
+                # has tripped — every frame goes into the output MP4 so the
+                # police view sees the entire clip with detections.
+                if self._annotated_writer is not None:
+                    try:
+                        self._annotated_writer.write(annotated)
+                    except Exception:
+                        logger.exception("VideoWriter.write failed; disabling annotated MP4")
+                        self._annotated_writer.release()
+                        self._annotated_writer = None
+                        self._annotated_path   = None
                 window_hits = sum(self._detection_window)
                 print(f"  conf={conf:.4f}  gate={window_hits}/{self._kofn_k}", end="\r")
                 if self._show:
@@ -558,6 +702,9 @@ class VideoCapture:
         if self._cap:
             self._cap.release()
             self._cap = None
+        if self._annotated_writer is not None:
+            self._annotated_writer.release()
+            self._annotated_writer = None
         if self._show:
             cv2.destroyAllWindows()
         self._s3_executor.shutdown(wait=False)

@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,11 +10,49 @@ from fastapi.staticfiles import StaticFiles
 from api.database import Base, engine, SessionLocal
 from api.routes import auth, devices, incidents, messages, ably_token
 
+logger = logging.getLogger(__name__)
+
+
+def _migrate_add_columns_sqlite() -> None:
+    """
+    Apply forward-only ADD COLUMN migrations on an existing SQLite DB.
+
+    SQLAlchemy's ``Base.metadata.create_all`` only creates tables that don't
+    exist yet — it never alters existing ones, so a model change like adding
+    ``Incident.gun_count`` would otherwise break the next query against an
+    already-populated dev DB. Listing migrations explicitly here keeps the
+    transition seamless without pulling in Alembic for what is currently a
+    single-developer dev DB.
+
+    Each migration is gated on the column not already being present so the
+    function is idempotent across restarts. Restricted to SQLite because
+    other backends should be migrated through Alembic (or equivalent).
+    """
+    if not engine.url.drivername.startswith("sqlite"):
+        return
+
+    migrations: tuple[tuple[str, str, str], ...] = (
+        # (table, column, ALTER statement)
+        ("incidents", "gun_count",
+         "ALTER TABLE incidents ADD COLUMN gun_count INTEGER"),
+    )
+
+    with engine.connect() as conn:
+        for table, column, ddl in migrations:
+            cols = {row[1] for row in conn.exec_driver_sql(
+                f"PRAGMA table_info({table})"
+            ).fetchall()}
+            if column not in cols:
+                logger.info("Migrating SQLite: %s -> add column %s", table, column)
+                conn.exec_driver_sql(ddl)
+        conn.commit()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create tables and seed demo data on startup
     Base.metadata.create_all(bind=engine)
+    _migrate_add_columns_sqlite()
     db = SessionLocal()
     try:
         auth.seed_users(db)

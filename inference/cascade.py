@@ -67,6 +67,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pipeline.extract_embeddings import load_yamnet, extract_embedding
+from inference.config import YOLO_WEIGHTS_PATH
 from inference.live_inference import (
     AblyPublisher,
     AudioCapture,
@@ -89,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DEFAULT_MODEL  = Path("models/saved_weights/dense_head_best.keras")
 AUDIO_DEFAULT_LOG    = Path("inference/cascade_detections.jsonl")
-VIDEO_DEFAULT_MODEL  = Path("YOLO_hugging-main/best.pt")
+VIDEO_DEFAULT_MODEL  = YOLO_WEIGHTS_PATH
 VIDEO_DEFAULT_LOG    = Path("vision/cascade_detections.jsonl")
 VIDEO_DEFAULT_THRESH = 0.60
 VIDEO_DEFAULT_IOU    = 0.45
@@ -271,11 +272,15 @@ def infer_video_file(
     aws_region: str,
     show: bool,
     file_server: "_LocalFileServer | None" = None,
-) -> tuple[bool, float]:
+) -> tuple[bool, float, int]:
     """
     Process a video file through YOLO.
-    Returns (detected, max_conf).
-    Publishes video:detected if gun found; caller publishes video:negative if not.
+
+    Returns ``(detected, max_conf, max_count)`` where ``max_count`` is the
+    peak number of simultaneously visible guns across the whole video.
+    Publishes ``video:detected`` if a gun is found; caller publishes
+    ``video:negative`` if not. The published ``video:segment`` URL points at
+    the *annotated* MP4 (bboxes + per-box confidences baked in by VideoCapture).
     """
     cap = VideoCapture(
         model_path=video_model,
@@ -292,18 +297,23 @@ def infer_video_file(
     )
     print(f"\n  ▶  STAGE-2  '{path.name}'  threshold={threshold:.2f}\n")
     cap.start()
-    detected, max_conf = cap.result
+    detected, max_conf, max_count = cap.result
     if detected:
-        print(f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  loc={location}")
+        print(
+            f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  count={max_count}  loc={location}"
+        )
         print(f"  → Police alert WITH visual reference\n")
-        # Serve the video file locally so the police page can play it
+        # Prefer the annotated MP4 written by VideoCapture so the police page
+        # plays the version with the model's bounding boxes baked in. Falls
+        # back to the raw input if the writer was disabled / unavailable.
         if file_server and publisher:
-            segment_url = file_server.url_for(path)
+            seg_path = cap.annotated_path or path
+            segment_url = file_server.url_for(seg_path)
             publisher.publish("video:segment", f"video:segment:{location}:{segment_url}")
             logger.info("Ably  →  video:segment:%s  url=%s", location, segment_url)
     else:
         print(f"\n  ■  No gun detected  (max_conf={max_conf:.3f})\n")
-    return detected, max_conf
+    return detected, max_conf, max_count
 
 
 def publish_video_negative(location: str, publisher: "AblyPublisher | None") -> None:
@@ -346,7 +356,7 @@ def prompt_and_run_video(
         publish_video_negative(location, publisher)
         return
 
-    detected, _ = infer_video_file(
+    detected, _max_conf, _max_count = infer_video_file(
         path=path,
         location=location,
         video_model=video_model,

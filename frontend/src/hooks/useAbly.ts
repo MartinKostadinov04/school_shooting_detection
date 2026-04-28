@@ -46,8 +46,13 @@ export function useAbly() {
       const existing = useStore
         .getState()
         .incidents.find((i) => i.location === evt.location && i.status !== "RESOLVED");
-      if (existing) markVideoConfirmed(evt.location, evt.probability);
-      else ingestDetection({ location: evt.location, source: "VIDEO-AI", probability: evt.probability });
+      if (existing) markVideoConfirmed(evt.location, evt.probability, evt.count);
+      else ingestDetection({
+        location: evt.location,
+        source: "VIDEO-AI",
+        probability: evt.probability,
+        gunCount: evt.count,
+      });
     } else if (evt.kind === "video:negative") {
       markVideoNegative(evt.location);
     } else if (evt.kind === "chat:message" && evt.chatMsg) {

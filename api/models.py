@@ -54,6 +54,12 @@ class Incident(Base):
     audio_url       = Column(String, nullable=True)
     video_url       = Column(String, nullable=True)
     video_confirmed = Column(Boolean, default=False)
+    # Peak number of simultaneously visible guns reported by the video
+    # worker for this incident (Vision-AI source or AUDIO-AI + VIDEO-AI
+    # confirmation). Nullable: only populated once a video segment has been
+    # processed; null while we're still in audio-only stage or for non-AI
+    # incidents.
+    gun_count       = Column(Integer, nullable=True)
 
     timeline = relationship(
         "IncidentTimeline",
