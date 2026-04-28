@@ -72,9 +72,11 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8080",
+        "http://localhost:8081",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8080",
+        "http://127.0.0.1:8081",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -84,6 +86,17 @@ app.add_middleware(
 # Mount all route modules under /api
 for router_module in (auth, devices, incidents, messages, ably_token):
     app.include_router(router_module.router, prefix="/api")
+
+# Serve demo_data/ as a stable static directory so annotated MP4s and audio
+# WAVs written by the cascade are reachable at http://localhost:8000/demo_data/...
+# even after the cascade process (and its ephemeral _LocalFileServer) exits.
+_demo = Path(__file__).parent.parent / "demo_data"
+if _demo.exists():
+    app.mount(
+        "/demo_data",
+        StaticFiles(directory=str(_demo)),
+        name="demo_data",
+    )
 
 # Serve built frontend in production
 _dist = Path(__file__).parent.parent / "frontend" / "dist"

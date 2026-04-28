@@ -96,6 +96,36 @@ VIDEO_DEFAULT_THRESH = 0.60
 VIDEO_DEFAULT_IOU    = 0.45
 VIDEO_DEFAULT_IMGSZ  = 1280
 
+# FastAPI backend base URL — media in known subdirectories is served from here
+# so URLs survive the cascade process exiting (the ephemeral _LocalFileServer
+# dies on exit, but the FastAPI static mount at /demo_data lives independently).
+# Override with the FASTAPI_BASE_URL env var if the backend is on a different host.
+FASTAPI_BASE_URL  = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
+DEMO_DATA_DIR     = Path("demo_data").resolve()   # files here → stable URLs
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def _stable_url(file_path: Path, file_server: "_LocalFileServer | None") -> str:
+    """
+    Return the best URL for ``file_path``:
+
+    * If the file lives inside ``demo_data/`` (the FastAPI static mount), return
+      ``http://localhost:8000/demo_data/<relative>`` — this URL survives the
+      cascade process exiting because it is served by the always-on FastAPI backend.
+    * Otherwise fall back to the ephemeral ``_LocalFileServer`` URL.
+    """
+    try:
+        rel = file_path.resolve().relative_to(DEMO_DATA_DIR)
+        return f"{FASTAPI_BASE_URL}/demo_data/{rel.as_posix()}"
+    except ValueError:
+        # File is outside demo_data/ — use ephemeral server if available
+        if file_server:
+            return file_server.url_for(file_path)
+        return str(file_path.resolve())
+
 
 # ---------------------------------------------------------------------------
 # Local file server — serves audio/video files to the browser for playback
@@ -231,11 +261,11 @@ def infer_audio_file(
             if publisher:
                 publisher.publish("audio:detected", f"audio:detected:{location}:{prob:.4f}")
                 logger.info("Ably  →  audio:detected:%s  prob=%.4f", location, prob)
-                # Serve the source file locally so the police page can play it
-                if file_server:
-                    snippet_url = file_server.url_for(path)
-                    publisher.publish("audio:snippet", f"audio:snippet:{location}:{snippet_url}")
-                    logger.info("Ably  →  audio:snippet:%s  url=%s", location, snippet_url)
+                # Build a stable URL for the audio snippet — prefer the FastAPI
+                # static mount (/demo_data/...) so the URL survives cascade exit.
+                snippet_url = _stable_url(path, file_server)
+                publisher.publish("audio:snippet", f"audio:snippet:{location}:{snippet_url}")
+                logger.info("Ably  →  audio:snippet:%s  url=%s", location, snippet_url)
 
             try:
                 log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -314,12 +344,12 @@ def infer_video_file(
             f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  count={max_count}  loc={location}"
         )
         print(f"  → Police alert WITH visual reference\n")
-        # Prefer the annotated MP4 written by VideoCapture so the police page
-        # plays the version with the model's bounding boxes baked in. Falls
-        # back to the raw input if the writer was disabled / unavailable.
-        if file_server and publisher:
+        # Prefer the annotated MP4 (bboxes baked in) over the raw input.
+        # Use a stable FastAPI URL (/demo_data/...) so the video keeps playing
+        # after the cascade exits and the ephemeral _LocalFileServer dies.
+        if publisher:
             seg_path = cap.annotated_path or path
-            segment_url = file_server.url_for(seg_path)
+            segment_url = _stable_url(seg_path, file_server)
             publisher.publish("video:segment", f"video:segment:{location}:{segment_url}")
             logger.info("Ably  →  video:segment:%s  url=%s", location, segment_url)
     else:
