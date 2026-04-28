@@ -83,20 +83,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount all route modules under /api
-for router_module in (auth, devices, incidents, messages, ably_token):
-    app.include_router(router_module.router, prefix="/api")
-
-# Serve demo_data/ as a stable static directory so annotated MP4s and audio
-# WAVs written by the cascade are reachable at http://localhost:8000/demo_data/...
-# even after the cascade process (and its ephemeral _LocalFileServer) exits.
+# Mount demo_data/ at /media BEFORE the /api routers and before the SPA
+# catch-all. StaticFiles mounts must be registered early — later mounts
+# (especially "/" with html=True) shadow everything not previously matched.
+# Files in demo_data/ are reachable at http://localhost:8000/media/<filename>
+# and survive cascade process restarts (no dependency on the ephemeral
+# _LocalFileServer that dies when cascade exits).
 _demo = Path(__file__).parent.parent / "demo_data"
 if _demo.exists():
     app.mount(
-        "/demo_data",
-        StaticFiles(directory=str(_demo)),
+        "/media",
+        StaticFiles(directory=str(_demo.resolve())),
         name="demo_data",
     )
+
+# Mount all route modules under /api
+for router_module in (auth, devices, incidents, messages, ably_token):
+    app.include_router(router_module.router, prefix="/api")
 
 # Serve built frontend in production
 _dist = Path(__file__).parent.parent / "frontend" / "dist"

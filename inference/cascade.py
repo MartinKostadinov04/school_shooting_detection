@@ -96,11 +96,11 @@ VIDEO_DEFAULT_THRESH = 0.60
 VIDEO_DEFAULT_IOU    = 0.45
 VIDEO_DEFAULT_IMGSZ  = 1280
 
-# FastAPI backend base URL — media in known subdirectories is served from here
-# so URLs survive the cascade process exiting (the ephemeral _LocalFileServer
-# dies on exit, but the FastAPI static mount at /demo_data lives independently).
+# FastAPI backend base URL — media in demo_data/ is served from here under
+# /api/media/ so the URL survives the cascade process exiting.
 # Override with the FASTAPI_BASE_URL env var if the backend is on a different host.
 FASTAPI_BASE_URL  = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
+FASTAPI_MEDIA_URL = f"{FASTAPI_BASE_URL}/media"
 DEMO_DATA_DIR     = Path("demo_data").resolve()   # files here → stable URLs
 
 
@@ -112,16 +112,17 @@ def _stable_url(file_path: Path, file_server: "_LocalFileServer | None") -> str:
     """
     Return the best URL for ``file_path``:
 
-    * If the file lives inside ``demo_data/`` (the FastAPI static mount), return
-      ``http://localhost:8000/demo_data/<relative>`` — this URL survives the
-      cascade process exiting because it is served by the always-on FastAPI backend.
-    * Otherwise fall back to the ephemeral ``_LocalFileServer`` URL.
+    * If the file lives inside ``demo_data/``, return a stable FastAPI URL
+      (``http://localhost:8000/api/media/<relative>``) that survives cascade
+      process exits.  The /api/media route is mounted before the SPA catch-all
+      so it is never shadowed by index.html.
+    * Otherwise fall back to the ephemeral ``_LocalFileServer`` URL, or the
+      absolute path string as a last resort.
     """
     try:
         rel = file_path.resolve().relative_to(DEMO_DATA_DIR)
-        return f"{FASTAPI_BASE_URL}/demo_data/{rel.as_posix()}"
+        return f"{FASTAPI_MEDIA_URL}/{rel.as_posix()}"
     except ValueError:
-        # File is outside demo_data/ — use ephemeral server if available
         if file_server:
             return file_server.url_for(file_path)
         return str(file_path.resolve())
