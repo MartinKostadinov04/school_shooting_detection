@@ -298,14 +298,31 @@ def _alert(
 # ---------------------------------------------------------------------------
 
 def _build_hand_detector():
-    """Return a MediaPipe Hands instance, or None if mediapipe is absent."""
+    """Return a MediaPipe Hands instance, or None if unavailable.
+
+    mediapipe >= 0.10.10 removed the legacy ``mp.solutions.hands`` API in
+    favour of the new ``mp.tasks.vision.HandLandmarker`` interface. Rather
+    than rewrite the call site for both APIs, we just fall back to None on
+    AttributeError — the rest of the pipeline already degrades gracefully
+    when the hand detector is missing (pose-overlap filter is bypassed,
+    SAHI + temporal-k-of-n still gate detections).
+    """
     if not _MEDIAPIPE_AVAILABLE:
         return None
-    return mp.solutions.hands.Hands(
-        static_image_mode=True,
-        max_num_hands=4,
-        min_detection_confidence=0.4,
-    )
+    try:
+        return mp.solutions.hands.Hands(
+            static_image_mode=True,
+            max_num_hands=4,
+            min_detection_confidence=0.4,
+        )
+    except AttributeError:
+        logger.warning(
+            "mediapipe %s does not expose mp.solutions.hands — pose-overlap "
+            "filter disabled. Install mediapipe<0.10.10 (or pass --no_pose) "
+            "to silence this warning.",
+            getattr(mp, "__version__", "unknown"),
+        )
+        return None
 
 
 def _hand_boxes(frame_rgb: np.ndarray, hands_detector) -> List[Tuple[int, int, int, int]]:
@@ -423,6 +440,11 @@ class VideoCapture:
         if use_pose and not _MEDIAPIPE_AVAILABLE:
             logger.warning("mediapipe not installed — pose-overlap constraint disabled. "
                            "Install with: pip install mediapipe")
+        # _build_hand_detector returns None when the installed mediapipe
+        # has dropped the legacy ``mp.solutions.hands`` API. In that case
+        # the constraint can't run, so reflect that in _use_pose.
+        if self._use_pose and self._hand_detect is None:
+            self._use_pose = False
         if self._use_pose:
             logger.info("Pose-overlap constraint enabled")
 

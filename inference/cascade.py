@@ -272,6 +272,10 @@ def infer_video_file(
     aws_region: str,
     show: bool,
     file_server: "_LocalFileServer | None" = None,
+    use_sahi: bool = True,
+    use_pose: bool = True,
+    kofn_k: int  = 4,
+    kofn_n: int  = 6,
 ) -> tuple[bool, float, int]:
     """
     Process a video file through YOLO.
@@ -281,6 +285,9 @@ def infer_video_file(
     Publishes ``video:detected`` if a gun is found; caller publishes
     ``video:negative`` if not. The published ``video:segment`` URL points at
     the *annotated* MP4 (bboxes + per-box confidences baked in by VideoCapture).
+
+    The FP-reduction stack toggles (``use_sahi``, ``use_pose``, ``kofn_*``)
+    are forwarded to :class:`VideoCapture` — see ``vision/live_inference.py``.
     """
     cap = VideoCapture(
         model_path=video_model,
@@ -294,6 +301,10 @@ def infer_video_file(
         aws_region=aws_region,
         source=str(path),
         show=show,
+        use_sahi=use_sahi,
+        use_pose=use_pose,
+        kofn_k=kofn_k,
+        kofn_n=kofn_n,
     )
     print(f"\n  ▶  STAGE-2  '{path.name}'  threshold={threshold:.2f}\n")
     cap.start()
@@ -338,6 +349,10 @@ def prompt_and_run_video(
     s3_bucket: "str | None",
     aws_region: str,
     show: bool,
+    use_sahi: bool = True,
+    use_pose: bool = True,
+    kofn_k: int  = 4,
+    kofn_n: int  = 6,
     file_server: "_LocalFileServer | None" = None,
 ) -> None:
     try:
@@ -369,6 +384,10 @@ def prompt_and_run_video(
         aws_region=aws_region,
         show=show,
         file_server=file_server,
+        use_sahi=use_sahi,
+        use_pose=use_pose,
+        kofn_k=kofn_k,
+        kofn_n=kofn_n,
     )
     if not detected:
         publish_video_negative(location, publisher)
@@ -403,6 +422,18 @@ def main() -> None:
                         help="Run live mic in background instead of REPL file mode.")
     parser.add_argument("--device",          type=int,   default=None,
                         help="sounddevice mic index (--live only).")
+    # FP-reduction stack toggles (forwarded to vision.live_inference.VideoCapture)
+    parser.add_argument("--no_sahi",         action="store_true",
+                        help="Disable SAHI tiled inference. SAHI gives ~10x mAP "
+                             "on small CCTV guns (Hnoohom 2022) but its torch "
+                             "tensor path is unstable on some Windows + cv2 + "
+                             "numpy combinations.")
+    parser.add_argument("--no_pose",         action="store_true",
+                        help="Disable the pose-overlap (hand-region) FP filter.")
+    parser.add_argument("--kofn_k",          type=int,   default=4,
+                        help="Frames required positive in the temporal gate.")
+    parser.add_argument("--kofn_n",          type=int,   default=6,
+                        help="Rolling temporal-gate window size.")
     args = parser.parse_args()
 
     for label, path in [("Audio model", args.audio_model), ("Video model", args.video_model)]:
@@ -436,6 +467,10 @@ def main() -> None:
         aws_region=args.aws_region,
         show=args.show,
         file_server=file_server,
+        use_sahi=not args.no_sahi,
+        use_pose=not args.no_pose,
+        kofn_k=args.kofn_k,
+        kofn_n=args.kofn_n,
     )
 
     logger.info("Loading YAMNet ...")
