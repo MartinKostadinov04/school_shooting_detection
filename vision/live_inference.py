@@ -665,15 +665,23 @@ class VideoCapture:
                 width  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
                 height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
                 if width > 0 and height > 0:
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    writer = cv2.VideoWriter(str(dest), fourcc, fps, (width, height))
-                    if writer.isOpened():
-                        self._annotated_writer = writer
-                        self._annotated_path   = dest
-                        logger.info(
-                            "Annotated MP4 writer  ->  %s  (%dx%d @ %.1f fps)",
-                            dest, width, height, fps,
-                        )
+                    # avc1 / H.264 is universally playable in browsers and
+                    # Cursor's Chromium engine. mp4v (MPEG-4 Part 2) is NOT
+                    # supported by any browser natively → video stuck at 0:00.
+                    # Try avc1 first; fall back to mp4v if the codec is absent
+                    # (we re-encode to H.264 with ffmpeg in stop() anyway).
+                    for fourcc_str in ("avc1", "mp4v"):
+                        fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                        writer = cv2.VideoWriter(str(dest), fourcc, fps, (width, height))
+                        if writer.isOpened():
+                            self._annotated_writer = writer
+                            self._annotated_path   = dest
+                            logger.info(
+                                "Annotated MP4 writer  ->  %s  (%dx%d @ %.1f fps, codec=%s)",
+                                dest, width, height, fps, fourcc_str,
+                            )
+                            break
+                        writer.release()
                     else:
                         logger.warning(
                             "Could not open VideoWriter for %s — annotated MP4 disabled",
@@ -727,9 +735,58 @@ class VideoCapture:
         if self._annotated_writer is not None:
             self._annotated_writer.release()
             self._annotated_writer = None
+            # Re-encode to H.264 so the file is playable in every browser and
+            # Chromium-based IDE (mp4v / MPEG-4 Part 2 is not browser-supported).
+            # ffmpeg overwrites a temp file then renames atomically.
+            if self._annotated_path and self._annotated_path.exists():
+                self._reencode_h264(self._annotated_path)
         if self._show:
             cv2.destroyAllWindows()
         self._s3_executor.shutdown(wait=False)
+
+    @staticmethod
+    def _reencode_h264(path: Path) -> None:
+        """Re-encode ``path`` in-place to H.264/AAC MP4 using ffmpeg.
+
+        Writes to a sibling ``.tmp.mp4`` first, then replaces the original.
+        Silently skips if ffmpeg is not on PATH.
+        """
+        import shutil
+        import subprocess
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            logger.debug("ffmpeg not found on PATH — skipping H.264 re-encode")
+            return
+
+        tmp = path.with_suffix(".tmp.mp4")
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-y",                          # overwrite without asking
+                    "-i", str(path),               # input: raw annotated MP4
+                    "-vcodec", "libx264",          # H.264 video
+                    "-preset", "fast",             # fast encode, reasonable size
+                    "-crf", "23",                  # quality (lower = better)
+                    "-pix_fmt", "yuv420p",         # required for browser compat
+                    "-an",                         # no audio track
+                    "-movflags", "+faststart",     # moov atom at front → instant play
+                    str(tmp),
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and tmp.exists():
+                tmp.replace(path)
+                logger.info("Re-encoded to H.264  ->  %s", path)
+            else:
+                stderr = result.stderr.decode(errors="replace").strip()
+                logger.warning("ffmpeg re-encode failed: %s", stderr[-300:] if stderr else "unknown")
+                tmp.unlink(missing_ok=True)
+        except Exception:
+            logger.exception("ffmpeg re-encode error; keeping original file")
+            tmp.unlink(missing_ok=True)
 
     def run_demo_file(self, file_path: Path) -> None:
         """Process a video file frame-by-frame (no webcam required)."""
