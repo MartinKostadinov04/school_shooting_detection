@@ -132,17 +132,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Force line-buffering so users running this in PowerShell / cmd.exe see
+    # progress messages immediately rather than after the entire poll loop.
+    # (Python's default on Windows is full buffering when stdout isn't a TTY.)
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     targets: list[tuple[str, Path]] = [
         ("weights/best.pt", args.output / "best.pt"),
     ]
     if not args.skip_last:
         targets.append(("weights/last.pt", args.output / "last.pt"))
 
-    print(f"Polling Modal volume '{VOLUME}' every {args.interval}s")
-    print(f"Mirroring  → {args.output.resolve()}")
+    print(f"Polling Modal volume '{VOLUME}' every {args.interval}s", flush=True)
+    print(f"Mirroring  → {args.output.resolve()}", flush=True)
     for remote, _ in targets:
-        print(f"           · {remote}")
-    print("Press Ctrl+C to stop.\n")
+        print(f"           · {remote}", flush=True)
+    print("Press Ctrl+C to stop.\n", flush=True)
 
     seen_missing: set[str] = set()
 
@@ -153,16 +161,22 @@ def main() -> None:
             name = Path(remote).name
             if status == "updated":
                 size_mb = local.stat().st_size / 1e6
-                print(f"  [{ts}] ✓ {name:<8}  updated ({size_mb:.1f} MB)  → {local}")
+                print(
+                    f"  [{ts}] ✓ {name:<8}  updated ({size_mb:.1f} MB)  → {local}",
+                    flush=True,
+                )
                 seen_missing.discard(remote)
             elif status == "missing":
                 # Only print "waiting" once per remote until the file shows up,
                 # to keep the log clean during long pre-validation periods.
                 if remote not in seen_missing:
-                    print(f"  [{ts}]   {name:<8}  waiting — remote file not present yet")
+                    print(
+                        f"  [{ts}]   {name:<8}  waiting — remote file not present yet",
+                        flush=True,
+                    )
                     seen_missing.add(remote)
             elif status.startswith("error"):
-                print(f"  [{ts}] ! {name:<8}  {status}")
+                print(f"  [{ts}] ! {name:<8}  {status}", flush=True)
 
     try:
         if args.once:
