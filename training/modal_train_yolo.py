@@ -191,7 +191,12 @@ def run_training(
     imgsz:       int  = DEFAULT_IMGSZ,
     batch:       int  = DEFAULT_BATCH,
     patience:    int  = DEFAULT_PATIENCE,
-    resume:      bool = False,
+    # ``resume`` defaults to True so that Modal preemption auto-restarts
+    # pick up at the last checkpoint instead of clobbering the run dir.
+    # When no checkpoint exists on the volume, the resume logic below
+    # transparently falls through to a fresh start from ``base_model`` —
+    # so the default is safe for a first-time run too.
+    resume:      bool = True,
 ) -> dict:
     """
     Fine-tune YOLO on the dataset stored at /vol/vision-train in the Modal volume.
@@ -212,7 +217,12 @@ def run_training(
     patience : int
         Early-stopping patience in epochs without mAP improvement.
     resume : bool
-        Resume training from a previous run on the volume. Two-tier lookup:
+        Resume training from a previous run on the volume. Defaults to True
+        so Modal preemption-triggered auto-restarts pick up at the last
+        checkpoint instead of clobbering ``run/`` (which Ultralytics will do
+        on a fresh start because ``exist_ok=True``).
+
+        Three-tier lookup:
 
         1. **True resume** — if ``/vol/weights/run/weights/last.pt`` AND
            ``/vol/weights/run/args.yaml`` exist, Ultralytics restores the
@@ -221,7 +231,11 @@ def run_training(
         2. **Warm-start** — otherwise, if ``/vol/weights/last.pt`` (the
            mirrored alias) exists, weights are loaded but the trainer
            starts from epoch 0 with a fresh schedule.
-        3. Else falls through to ``base_model``.
+        3. Else (no checkpoint anywhere) falls through to ``base_model`` —
+           making the True default safe for first-time runs as well.
+
+        Pass ``--no-resume`` on the CLI to force a fresh start over an
+        existing run dir (it WILL be wiped — that is intentional).
     """
     import shutil
     import torch
@@ -436,7 +450,9 @@ def main(
     imgsz:      int  = DEFAULT_IMGSZ,
     batch:      int  = DEFAULT_BATCH,
     patience:   int  = DEFAULT_PATIENCE,
-    resume:     bool = False,
+    # See run_training(): default True so Modal preemption restarts auto-recover
+    # from the last checkpoint. Pass --no-resume on the CLI to force a fresh start.
+    resume:     bool = True,
 ) -> None:
     """
     Submit a YOLO fine-tuning job to Modal.
