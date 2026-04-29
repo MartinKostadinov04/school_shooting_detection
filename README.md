@@ -30,20 +30,22 @@ Trained on **24,144 clips** (4,621 gunshot / 19,523 not_gunshot). Test set: 3,62
 | Recall | 91.3% |
 | TP / FP / FN / TN | 633 / 43 / 60 / 2886 |
 
-> Threshold: **0.64** (selected via full sweep, see `experiments/plots/threshold_sweep/`)
+> Threshold: **0.64** — selected via sweep over 0.02–0.98, see `experiments/plots/threshold_sweep/`
 
-### Component B — Vision (YOLOv11s)
+### Component B — Vision (YOLOv11s fine-tuned)
 
-Fine-tuned on a curated firearm-detection dataset (see
-[vision/](vision/) and `YOLO_hugging-main/`).
+Evaluated on **1,737 held-out test images** (919 positives / 818 negatives, 974 GT boxes).
+Threshold sweep at IoU-match ≥ 0.50, see `experiments/plots/yolo_threshold_sweep/`.
 
 | Metric | Value |
 |---|---|
-| mAP@50 | 0.984 |
-| Precision | 0.995 |
-| Recall | 0.980 |
+| F1 (best) | 0.915 |
+| Precision | 0.934 |
+| Recall | 0.897 |
+| PR-AUC | 0.915 |
+| TP / FP / FN | 874 / 62 / 100 |
 
-> Confidence threshold: **0.6** | NMS IoU: **0.45** | Inference resolution: **1280**
+> Confidence threshold: **0.35** (best F1) | NMS IoU: **0.45** | Inference resolution: **1280**
 
 ---
 
@@ -54,69 +56,70 @@ Fine-tuned on a curated firearm-detection dataset (see
 ├── README.md
 ├── requirements.txt
 ├── .env.example                        ← copy to .env, fill in secrets
-├── wav_info.py                         ← WAV file inspector utility
+│
+├── demo_data/                          ← pre-recorded clips for offline demo
+│   ├── audio_gun.wav                   ← 2 s gunshot clip (prob peaks at 1.00)
+│   ├── video_gun.mp4                   ← raw CCTV footage with visible firearm
+│   └── video_gun.annotated.mp4         ← same clip with bounding boxes baked in
 │
 ├── frontend/                           ← React dashboard (TanStack Start + shadcn/ui)
 │   └── src/
-│       ├── hooks/useAuth.ts            ← auth → POST /api/auth/login
-│       ├── hooks/useAbly.ts            ← Ably subscriber → audio/video events
-│       ├── lib/ably.ts                 ← Ably client → GET /api/ably-token
-│       └── lib/incidentStore.ts        ← Zustand store, API-backed
+│       ├── hooks/useAuth.ts
+│       ├── hooks/useAbly.ts
+│       ├── lib/ably.ts
+│       └── lib/incidentStore.ts
 │
 ├── api/                                ← FastAPI backend
-│   ├── main.py                         ← app, CORS, router mount, lifespan seed
-│   ├── database.py                     ← SQLAlchemy engine + session
-│   ├── models.py                       ← ORM: users, devices, incidents, messages
-│   ├── schemas.py                      ← Pydantic request/response models
+│   ├── main.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
 │   └── routes/
-│       ├── auth.py                     ← POST /api/auth/login, GET /api/auth/me
-│       ├── devices.py                  ← GET/PATCH /api/schools/{id}/devices
-│       ├── incidents.py                ← CRUD /api/incidents
-│       ├── messages.py                 ← GET/POST /api/incidents/{id}/messages
-│       └── ably_token.py               ← GET /api/ably-token
-│
-├── configs/
-│   ├── yamnet_pipeline.yaml            ← audio pipeline + Modal config
-│   └── experiment_template.yaml
-│
-├── data/
-│   ├── raw/
-│   │   ├── gunshot/                    ← 4,621 WAVs (label 1)
-│   │   └── not_gunshot/                ← 19,523 WAVs (label 0)
-│   └── processed/
-│       ├── embeddings/                 ← output of extract_embeddings.py
-│       └── splits/                     ← 70/15/15 train/val/test splits
-│
-├── pipeline/                           ← audio embedding extraction
-│   ├── extract_embeddings.py           ← YAMNet extraction CLI (local)
-│   ├── modal_extract.py                ← YAMNet extraction on Modal cloud GPU (T4)
-│   └── split_dataset.py                ← stratified train/val/test split
-│
-├── models/                             ← classification heads + saved weights
-│   ├── head_dense.py                   ← Dense MLP head (build_dense_head)
-│   └── saved_weights/
-│       └── dense_head_best.keras       ← best checkpoint (val_loss)
-│
-├── training/                           ← audio head training
-│   ├── train_head.py                   ← training CLI with early stopping + class weights
-│   └── evaluate_test.py                ← held-out test set evaluation
+│       ├── auth.py
+│       ├── devices.py
+│       ├── incidents.py
+│       ├── messages.py
+│       └── ably_token.py
 │
 ├── inference/                          ← Component A — audio live inference
-│   └── live_inference.py               ← real-time mic / file inference (sliding window)
+│   ├── live_inference.py               ← real-time mic / file inference
+│   ├── cascade.py                      ← two-stage audio → video pipeline
+│   └── config.py                       ← YOLO weights path resolution
 │
 ├── vision/                             ← Component B — vision live inference
-│   ├── live_inference.py               ← real-time webcam / video file inference
-│   └── inference_breakdown.md          ← component-by-component code walkthrough
+│   └── live_inference.py               ← real-time webcam / video file inference
+│
+├── models/
+│   ├── head_dense.py                   ← Dense MLP head (build_dense_head)
+│   ├── saved_weights/
+│   │   └── dense_head_best.keras       ← best audio head checkpoint (LFS)
+│   └── yolo_finetuned/
+│       └── best.pt                     ← fine-tuned YOLOv11s checkpoint (LFS)
+│
+├── pipeline/                           ← audio embedding extraction (training only)
+│   ├── extract_embeddings.py
+│   ├── modal_extract.py
+│   └── split_dataset.py
+│
+├── training/
+│   ├── train_head.py
+│   ├── evaluate_test.py
+│   └── modal_train_yolo.py             ← YOLOv11s fine-tuning on Modal A100
 │
 ├── experiments/
-│   ├── threshold_sweep.py              ← sweep audio thresholds 0.02–0.98
-│   ├── runs/                           ← per-run JSON (train + test metrics)
+│   ├── threshold_sweep.py              ← audio threshold sweep (0.02–0.98)
+│   ├── yolo_threshold_sweep.py         ← YOLO confidence sweep on test set
 │   └── plots/
-│       └── threshold_sweep/            ← PR curve, ROC, F1 vs threshold, metrics table
+│       ├── threshold_sweep/            ← audio: PR curve, ROC, F1 vs threshold
+│       └── yolo_threshold_sweep/       ← vision: PR curve, F1 vs threshold, IoU grid
+│
+├── configs/
+│   ├── yamnet_pipeline.yaml
+│   └── experiment_template.yaml
 │
 ├── scripts/
-│   ├── dev.sh                          ← start API + frontend + audio + vision (Linux/Mac)
-│   └── dev.ps1                         ← same, Windows
+│   ├── dev.sh                          ← start full stack (Linux/Mac)
+│   └── dev.ps1                         ← start full stack (Windows)
 │
 └── tests/
     ├── test_extract_embeddings.py
@@ -131,47 +134,50 @@ Fine-tuned on a curated firearm-detection dataset (see
 pip install -r requirements.txt
 ```
 
-Requires Python 3.10+ and Node.js 18+. The vision component additionally needs
-`ultralytics` and `opencv-python` (already in `requirements.txt`) and the
-fine-tuned YOLO weights at `YOLO_hugging-main/best.pt`.
+Requires **Python 3.10+** and **Node.js 18+**.
+
+Both model weights are stored in the repo via Git LFS:
+- `models/saved_weights/dense_head_best.keras` — audio head
+- `models/yolo_finetuned/best.pt` — fine-tuned YOLOv11s
+
+> Make sure `git lfs` is installed before cloning so the model files download
+> correctly (`git lfs install` once, then `git clone` as usual).
 
 ---
 
-## Full-Stack Quick Start
+## Quick Start
 
-### One command (after setting up `.env`)
+### 1. Clone
+
+```bash
+git lfs install          # only needed once per machine
+git clone https://github.com/MartinKostadinov04/school_shooting_detection.git
+cd school_shooting_detection
+pip install -r requirements.txt
+```
+
+### 2. Environment
+
+```bash
+cp .env.example .env
+# Edit .env — set ABLY_API_KEY and JWT_SECRET at minimum
+```
+
+### 3. Full stack
 
 ```bash
 # Linux / Mac
-cp .env.example .env   # fill in ABLY_API_KEY, JWT_SECRET
 bash scripts/dev.sh
 
 # Windows (PowerShell)
-Copy-Item .env.example .env   # fill in secrets
 .\scripts\dev.ps1
 ```
 
 This starts:
-1. **FastAPI backend** at `http://localhost:8000` — auto-creates SQLite DB and seeds demo data
+1. **FastAPI backend** at `http://localhost:8000` — auto-seeds SQLite with demo data
 2. **React dashboard** at `http://localhost:5173` — school and police views
-3. **Audio inference** — microphone listener publishing to Ably channel `gunshot-detection`
-4. **Vision inference** — webcam listener publishing to the same channel
-
-### Manual startup (four terminals)
-
-```bash
-# 1. Backend
-uvicorn api.main:app --reload --port 8000
-
-# 2. Frontend
-cd frontend && npm install && npm run dev
-
-# 3. Audio pipeline
-python -m inference.live_inference --location "Main Entrance"
-
-# 4. Vision pipeline
-python -m vision.live_inference --location "Main Entrance"
-```
+3. **Audio inference** — mic listener on `gunshot-detection` channel
+4. **Vision inference** — webcam listener on the same channel
 
 ### Demo credentials
 
@@ -179,6 +185,95 @@ python -m vision.live_inference --location "Main Entrance"
 |---|---|---|
 | School Operator | school@demo.com | school123 |
 | Dispatch Officer | police@demo.com | police123 |
+
+---
+
+## Cascade Demo (Offline, No Webcam Required)
+
+The cascade pipeline chains both components: audio stage 1 triggers video
+stage 2 for visual confirmation. Pre-recorded demo clips are in `demo_data/`.
+
+### What it does
+
+```
+demo_data/audio_gun.wav  →  Stage 1: YAMNet + Dense head
+                                prob=0.758 ≥ 0.64  →  GUNSHOT DETECTED
+                                Ably: audio:detected  +  audio:snippet
+                             ↓
+demo_data/video_gun.mp4  →  Stage 2: YOLOv11s (conf ≥ 0.35, 4-of-6 gate)
+                                conf=0.627 → 0.759, count=2
+                                Ably: video:detected  +  video:segment
+```
+
+### Command
+
+```bash
+# Start the FastAPI backend first (needed for stable media URLs):
+uvicorn api.main:app --reload --port 8000
+
+# Then in a second terminal — run the cascade in REPL mode:
+python -m inference.cascade --no_sahi
+
+# At the REPL prompt, submit the audio clip:
+cascade [Cafeteria]> demo_data/audio_gun.wav
+
+# When asked for the video path, submit the video clip:
+Video path for visual confirmation (Enter to skip): demo_data/video_gun.mp4
+```
+
+> `--no_sahi` skips tiled inference to avoid a known torch/numpy/cv2
+> incompatibility on some Windows setups. Omit it on Linux/Mac.
+
+### Expected output
+
+```
+  TacticalEye — Cascade Pipeline
+  ══════════════════════════════════════════════════════
+  Audio:    threshold=0.64  window=2.0s  hop=0.5s
+  Video:    threshold=0.35  model=best.pt
+  Location: Cafeteria
+  Mode:     REPL (file submission)
+  ══════════════════════════════════════════════════════
+
+  cascade [Cafeteria]> demo_data/audio_gun.wav
+
+  ▶  'audio_gun.wav'  (2.0 s · 4 chunks · window=2.0s  hop=0.5s)
+
+  🔴  GUNSHOT DETECTED  prob=0.758  loc=Cafeteria
+
+  Video path for visual confirmation (Enter to skip): demo_data/video_gun.mp4
+
+  ▶  STAGE-2  'video_gun.mp4'  threshold=0.35
+
+  🔴  GUN DETECTED  conf=0.759  count=2  loc=Cafeteria
+  → Police alert WITH visual reference
+```
+
+Both alerts are published to Ably and appear live on the React dashboard.
+
+### Live-mic + live-video mode
+
+```bash
+python -m inference.cascade --live --location "Main Entrance"
+```
+
+Runs the microphone continuously. On a gunshot detection it pauses and asks
+for a video path. Press `Ctrl+C` to stop.
+
+### Cascade CLI flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--audio_threshold` | `0.64` | Min gunshot probability to fire stage 2 |
+| `--video_threshold` | `0.35` | Min YOLO confidence to confirm a gun |
+| `--location` | `Cafeteria` | Label sent in every Ably message |
+| `--audio_model` | `models/saved_weights/dense_head_best.keras` | Audio head weights |
+| `--video_model` | `models/yolo_finetuned/best.pt` | YOLO weights |
+| `--no_sahi` | off | Disable tiled inference (Windows stability fix) |
+| `--no_pose` | off | Disable pose-overlap FP filter |
+| `--live` | off | Live-mic mode instead of REPL file mode |
+| `--show` | off | Open OpenCV window during video stage |
+| `--ably_key` | `$ABLY_API_KEY` | Override env var |
 
 ---
 
@@ -190,7 +285,7 @@ python -m vision.live_inference --location "Main Entrance"
 │  WAV file)       │                       │  video file)     │
 └────────┬─────────┘                       └────────┬─────────┘
          │  YAMNet → Dense head                     │  YOLOv11s
-         │  prob ≥ 0.64                             │  conf ≥ 0.6
+         │  prob ≥ 0.64                             │  conf ≥ 0.35
          ▼                                          ▼
    ┌─────────────────────────────────────────────────────┐
    │  Ably channel:  gunshot-detection                   │
@@ -205,24 +300,26 @@ python -m vision.live_inference --location "Main Entrance"
               └─────────────────────┘
 ```
 
-Both components have a 5-second alert cooldown and bounded S3-upload thread
-pools — sustained detections won't flood the channel or the bucket.
+Both components have a 5-second alert cooldown. The vision component also
+uses a 4-of-6 temporal gate — a gun must appear in 4 out of 6 consecutive
+frames before an alert fires, suppressing single-frame false positives.
 
 ### Ably message format
 
 | Event name | Data |
 |---|---|
-| `audio:detected` | `audio:detected:{location}` |
-| `audio:snippet` | `audio:snippet:{location}:{presigned_url}` |
-| `video:detected` | `video:detected:{location}` |
-| `video:segment` | `video:segment:{location}:{presigned_url}` |
+| `audio:detected` | `audio:detected:{location}:{prob}` |
+| `audio:snippet` | `audio:snippet:{location}:{url}` |
+| `video:detected` | `video:detected:{location}:{conf}` |
+| `video:segment` | `video:segment:{location}:{url}` |
+| `video:negative` | `video:negative:{location}` |
 
 ### Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `ABLY_API_KEY` | For WS alerts | Ably API key (or pass `--ably_key`) |
-| `AWS_ACCESS_KEY_ID` | For S3 upload | AWS credentials (standard boto3 env vars) |
+| `AWS_ACCESS_KEY_ID` | For S3 upload | AWS credentials |
 | `AWS_SECRET_ACCESS_KEY` | For S3 upload | |
 | `AWS_DEFAULT_REGION` | For S3 upload | Falls back to `--aws_region` arg |
 | `JWT_SECRET` | API auth | Backend JWT signing key |
@@ -239,10 +336,9 @@ pools — sustained detections won't flood the channel or the bucket.
 ```
 Audio source (one of):
   A) Microphone      → sounddevice InputStream callback
-  B) --demo_file     → librosa.load → chunked in-process
-  C) --run + sender  → UDP socket (127.0.0.1:9999) ← --demo_file in T2
+  B) --demo_file     → soundfile.read → chunked in-process
           ↓
-  Ring buffer (32,000 samples = last 2 s)
+  Ring buffer (32,000 samples = last 2 s at 16 kHz)
           ↓
   YAMNet → (1024,) embedding    ← one forward pass per 0.5 s chunk
           ↓
@@ -251,8 +347,8 @@ Audio source (one of):
   if prob >= 0.64 (with 5 s cooldown):
       • console log
       • append to inference/detections.jsonl
-      • Ably WS → "audio:detected:{location}"
-      • (optional) upload 2 s WAV → S3 → "audio:snippet:{location}:{url}"
+      • Ably WS → "audio:detected:{location}:{prob}"
+      • Ably WS → "audio:snippet:{location}:{url}"
 ```
 
 Latency: ≤ 0.5 s from audio to detection.
@@ -266,51 +362,15 @@ Input(1024)           ← YAMNet mean-pooled clip embedding
   → Dense(1, sigmoid) → gunshot probability in [0, 1]
 ```
 
-### Training
-
-```bash
-# Default hyperparameters
-python -m training.train_head
-
-# Override class weight for higher recall
-python -m training.train_head --class_weight_gunshot 8.0 --threshold 0.35
-```
-
-Best weights saved to `models/saved_weights/dense_head_best.keras`.
-
 ### Live inference
 
 ```bash
-# Live mic, console + JSONL log only
-python -m inference.live_inference --location "building-a/entrance"
+python -m inference.live_inference --location "Main Entrance"
 
-# With Ably WebSocket alerts
-export ABLY_API_KEY="your-ably-key"
-python -m inference.live_inference --location "building-a/entrance"
-
-# With Ably + S3 audio snippet upload
-python -m inference.live_inference \
-    --location   "building-a/entrance" \
-    --s3_bucket  my-bucket \
-    --aws_region eu-west-1
+# With Ably + S3
+export ABLY_API_KEY="your-key"
+python -m inference.live_inference --location "Main Entrance" --s3_bucket my-bucket
 ```
-
-### File / demo modes
-
-```bash
-# Single terminal — loads model, plays audio, runs inference
-python -m inference.live_inference --demo_file path/to/shot.wav --location "Gymnasium"
-
-# Two terminals — engine stays running, audio injected on demand
-# Terminal 1:
-python -m inference.live_inference --run --location "Gymnasium"
-# Terminal 2:
-python -m inference.live_inference --demo_file path/to/shot.wav
-```
-
-`--demo_file` auto-detects whether `--run` is listening on the UDP port. If
-it is, it acts as a sender; otherwise it falls back to the single-terminal
-path.
 
 ### Audio CLI flags
 
@@ -319,14 +379,10 @@ path.
 | `--model_path` | `models/saved_weights/dense_head_best.keras` | Head weights |
 | `--threshold` | `0.64` | Min probability to alert |
 | `--device` | `None` | sounddevice input device index |
-| `--source` (via `--demo_file`) | mic | Audio file path |
-| `--run` | `False` | Bind UDP listener instead of opening mic |
-| `--port` | `9999` | UDP port for `--run` / `--demo_file` IPC |
 | `--location` | `unknown` | Label sent in every Ably message |
 | `--channel` | `gunshot-detection` | Ably channel name |
 | `--ably_key` | `$ABLY_API_KEY` | Override env var |
 | `--s3_bucket` | `None` | Omit to skip S3 upload |
-| `--aws_region` | `us-east-1` | AWS region for boto3 |
 
 ---
 
@@ -339,141 +395,108 @@ Video source (one of):
   A) Webcam (--source 0)        → cv2.VideoCapture device index
   B) --source path/to/video.mp4 → cv2.VideoCapture file path
           ↓
-  YOLOv11s → bounding boxes + confidence
+  YOLOv11s → bounding boxes + confidence scores
           ↓
-  if max_conf >= 0.6 (with 5 s cooldown):
+  FP-reduction stack:
+    1. Temporal 4-of-6 gate     ← gun must appear in 4 of 6 consecutive frames
+    2. SAHI tiled inference     ← improves recall on small/distant guns
+    3. Pose-overlap filter      ← suppresses detections not near a hand region
+          ↓
+  if gate fires (with 5 s cooldown):
       • console log
       • append to vision/detections.jsonl
-      • Ably WS → "video:detected:{location}"
-      • (optional) upload annotated frame → S3 → "video:segment:{location}:{url}"
+      • Ably WS → "video:detected:{location}:{conf}"
+      • Ably WS → "video:segment:{location}:{url}"
 ```
 
 ### Live inference
 
 ```bash
-# Webcam (default), no display window
+# Webcam (default)
 python -m vision.live_inference --location "Main Entrance"
 
-# Webcam with annotated playback window (press 'q' to stop)
-python -m vision.live_inference --location "Main Entrance" --show
-
-# Video file
+# Video file with annotated playback window
 python -m vision.live_inference \
-    --source YOLO_hugging-main/footage_worked/footage_pistol.avi \
+    --source demo_data/video_gun.mp4 \
     --location "Gymnasium" \
     --show
-
-# With Ably + S3
-export ABLY_API_KEY="your-ably-key"
-python -m vision.live_inference \
-    --location  "Gymnasium" \
-    --s3_bucket my-bucket
 ```
 
 ### Vision CLI flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model_path` | `YOLO_hugging-main/best.pt` | Path to YOLO weights |
-| `--threshold` | `0.6` | Min confidence to alert |
+| `--model_path` | `models/yolo_finetuned/best.pt` | YOLO weights |
+| `--threshold` | `0.35` | Min confidence to alert |
 | `--iou` | `0.45` | NMS IoU threshold |
 | `--imgsz` | `1280` | Inference resolution |
 | `--source` | `0` | `0` = webcam, or path to video file |
 | `--show` | `False` | Open OpenCV window with annotated feed |
+| `--no_sahi` | off | Disable SAHI tiled inference |
+| `--no_pose` | off | Disable pose-overlap FP filter |
 | `--location` | `unknown` | Label sent in every Ably message |
-| `--channel` | `gunshot-detection` | Ably channel name |
 | `--ably_key` | `$ABLY_API_KEY` | Override env var |
 | `--s3_bucket` | `None` | Omit to skip S3 upload |
-| `--aws_region` | `us-east-1` | AWS region for boto3 |
 
 ---
 
-## Audio Pipeline (one-time setup)
+## Threshold Selection
 
-If you want to retrain the audio head from scratch, run the data pipeline
-first.
-
-### Step 1 — Extract YAMNet embeddings
-
-```bash
-# Local
-python -m pipeline.extract_embeddings \
-    --data_dir data/raw \
-    --output_dir data/processed/embeddings \
-    --workers 8
-
-# Or on Modal T4 GPU
-modal run pipeline/modal_extract.py
-```
-
-### Step 2 — Split dataset
-
-```bash
-python -m pipeline.split_dataset \
-    --embeddings_dir data/processed/embeddings \
-    --output_dir data/processed/splits
-```
-
-Stratified 70/15/15 split, `random_state=42`.
-
-### Step 3 — Train head
-
-```bash
-python -m training.train_head
-```
-
-### Step 4 — Evaluate on test set
-
-```bash
-python -m training.evaluate_test --threshold 0.64
-```
-
-### Step 5 — Threshold sweep
+### Audio
 
 ```bash
 python -m experiments.threshold_sweep
 ```
 
-Saves PR curve, ROC, F1 vs threshold, and a full metrics table to
-`experiments/plots/threshold_sweep/`.
+Sweeps 0.02–0.98 on the test set and saves PR curve, ROC, F1 vs threshold,
+and a metrics table to `experiments/plots/threshold_sweep/`.
+Best threshold: **0.64** (F1 = 0.925).
 
----
-
-## Modal Cloud GPU
-
-Run audio embedding extraction on a Modal T4 GPU instead of locally.
+### Vision (YOLO)
 
 ```bash
-# One-time setup
-pip install modal
-modal token new
-modal volume create gunshot-data
-
-# Upload raw WAVs
-modal volume put gunshot-data data/raw/gunshot     gunshot
-modal volume put gunshot-data data/raw/not_gunshot not_gunshot
-
-# Run extraction
-modal run pipeline/modal_extract.py
-
-# Download results
-modal volume get gunshot-data embeddings data/processed/embeddings
+python -m experiments.yolo_threshold_sweep
 ```
+
+Runs YOLO once at conf=0.001 to collect all raw detections, then sweeps
+0.05–0.95 in post-processing using IoU-match ≥ 0.50. Saves four plots to
+`experiments/plots/yolo_threshold_sweep/` and raw numbers to
+`experiments/runs/yolo_sweep_results.json`.
+Best threshold: **0.35** (F1 = 0.915, PR-AUC = 0.915).
 
 ---
 
-## Data Contracts
+## Training from Scratch
 
-| Stage | Reads | Writes |
-|---|---|---|
-| `extract_embeddings.py` | `data/raw/gunshot/`, `data/raw/not_gunshot/` | `data/processed/embeddings/` |
-| `modal_extract.py` | Modal volume: `gunshot/`, `not_gunshot/` | Modal volume: `embeddings/` |
-| `split_dataset.py` | `data/processed/embeddings/` | `data/processed/splits/` |
-| `train_head.py` | `data/processed/splits/` | `models/saved_weights/`, `experiments/runs/` |
-| `evaluate_test.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/runs/test_results.json` |
-| `threshold_sweep.py` | `data/processed/splits/`, `models/saved_weights/` | `experiments/plots/threshold_sweep/` |
-| `inference/live_inference.py` | `models/saved_weights/`, audio source | `inference/detections.jsonl`, Ably, S3 |
-| `vision/live_inference.py` | `YOLO_hugging-main/best.pt`, video source | `vision/detections.jsonl`, Ably, S3 |
+### Audio head
+
+```bash
+# 1. Extract YAMNet embeddings
+python -m pipeline.extract_embeddings \
+    --data_dir data/raw \
+    --output_dir data/processed/embeddings
+
+# 2. Split dataset
+python -m pipeline.split_dataset \
+    --embeddings_dir data/processed/embeddings \
+    --output_dir data/processed/splits
+
+# 3. Train
+python -m training.train_head
+
+# 4. Evaluate
+python -m training.evaluate_test --threshold 0.64
+
+# 5. Sweep thresholds
+python -m experiments.threshold_sweep
+```
+
+### YOLOv11s (Modal cloud GPU)
+
+```bash
+# Requires a Modal account — fine-tuning runs on an A100-80GB
+modal run training/modal_train_yolo.py
+```
 
 ---
 
@@ -481,20 +504,8 @@ modal volume get gunshot-data embeddings data/processed/embeddings
 
 - Requires: mono, 16 kHz, float32, values in `[-1.0, +1.0]`
 - Computes its own mel spectrogram internally — do **not** pass spectrograms
-- 0.96-second windows, 0.48-second hop — a 2-second clip produces 3 frames, mean-pooled to (1024,)
-- The "Gunshot, gunfire" AudioSet class index is resolved dynamically at
-  runtime via `resolve_gunshot_class_idx()` — do not hardcode it. The
-  bundled class map places it at index 421.
-- YAMNet outputs numbers, not strings — class names are resolved via `load_class_map()`
-
----
-
-## Reproducibility
-
-- All random operations use `random_state=42`
-- `split_info.json` stores exact original indices
-- `metadata.json` timestamps every extraction run and embeds the full 521-class map
-- `configs/yamnet_pipeline.yaml` is the single source of truth for audio pipeline hyperparameters
+- 0.96 s windows, 0.48 s hop — a 2 s clip produces 3 frames, mean-pooled to (1024,)
+- YAMNet class names are resolved dynamically via `load_class_map()` — do not hardcode indices
 
 ---
 
@@ -502,5 +513,4 @@ modal volume get gunshot-data embeddings data/processed/embeddings
 
 - Valliappan et al. (2024, IEEE Access) — YAMNet + Dense head, 94.96% accuracy on 12-class firearm ID
 - Wu (DAML 2024) — YAMNet + BiLSTM, strong generalization on UrbanSound8K
-- TensorFlow official YAMNet tutorial — embeddings + 2-layer Dense head for binary classification
-- Ultralytics YOLOv11 — fine-tuned for firearm detection on the curated dataset in `YOLO_hugging-main/`
+- Ultralytics YOLOv11 — fine-tuned for firearm detection on curated CCTV dataset

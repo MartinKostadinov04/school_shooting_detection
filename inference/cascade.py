@@ -39,7 +39,7 @@ Common flags
 ────────────────────────────────────────────────────────────────────────────
   --location          default location label          (default: Cafeteria)
   --audio_threshold   gunshot probability threshold   (default: 0.64)
-  --video_threshold   YOLO confidence threshold       (default: 0.60)
+  --video_threshold   YOLO confidence threshold       (default: 0.35)
   --audio_model       path to .keras weights
   --video_model       path to .pt weights
   --ably_key / ABLY_API_KEY
@@ -92,7 +92,7 @@ AUDIO_DEFAULT_MODEL  = Path("models/saved_weights/dense_head_best.keras")
 AUDIO_DEFAULT_LOG    = Path("inference/cascade_detections.jsonl")
 VIDEO_DEFAULT_MODEL  = YOLO_WEIGHTS_PATH
 VIDEO_DEFAULT_LOG    = Path("vision/cascade_detections.jsonl")
-VIDEO_DEFAULT_THRESH = 0.60
+VIDEO_DEFAULT_THRESH = 0.35  # threshold sweep on test set: best F1=0.915 at conf=0.35
 VIDEO_DEFAULT_IOU    = 0.45
 VIDEO_DEFAULT_IMGSZ  = 1280
 

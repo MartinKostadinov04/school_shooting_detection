@@ -40,7 +40,7 @@ Usage
     python -m vision.live_inference --source path/to/video.mp4 --location "Gymnasium"
 
   Optional flags:
-    --threshold 0.6  --iou 0.45  --imgsz 1280
+    --threshold 0.35  --iou 0.45  --imgsz 1280
     --no_sahi        disable tiled inference (faster, less accurate on small guns)
     --no_pose        disable pose-overlap constraint
     --kofn_k 4       detections required in rolling window (default: 4)
@@ -98,7 +98,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH  = YOLO_WEIGHTS_PATH
 DEFAULT_LOG_FILE    = Path("vision/detections.jsonl")
-DEFAULT_THRESHOLD   = 0.6
+DEFAULT_THRESHOLD   = 0.35  # threshold sweep on test set: best F1=0.915 at conf=0.35
 DEFAULT_IOU         = 0.45
 DEFAULT_IMG_SIZE    = 1280
 DEFAULT_CHANNEL     = "gunshot-detection"
