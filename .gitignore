@@ -22,7 +22,7 @@ env/
 data/
 
 # Trained model weights
-models/saved_weights/          # audio head — ignored; force-add if needed
+# models/saved_weights/ is NOT ignored — dense_head_best.keras is tracked via LFS
 models/yolo_finetuned/last.pt  # large duplicate of best.pt — not needed in repo
 
 # Experiment run logs (JSON/CSV artefacts — not source)
