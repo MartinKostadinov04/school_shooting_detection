@@ -122,7 +122,8 @@ Threshold sweep at IoU-match ≥ 0.50, see `experiments/plots/yolo_threshold_swe
 │   ├── dev.ps1                         ← start full stack (Windows)
 │   ├── prepare_vision_data.py          ← merge 4 datasets into YOLO format
 │   ├── upload_to_modal.py              ← push vision dataset to Modal volume
-│   └── sync_weights.py                 ← pull trained checkpoint from Modal volume
+│   ├── sync_weights.py                 ← pull trained checkpoint from Modal volume
+│   └── wav_info.py                     ← inspect WAV files for YAMNet compatibility
 │
 └── tests/
     ├── test_preprocessing.py
