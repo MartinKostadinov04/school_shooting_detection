@@ -97,13 +97,14 @@ Threshold sweep at IoU-match ≥ 0.50, see `experiments/plots/yolo_threshold_swe
 │       └── best.pt                     ← fine-tuned YOLOv11s checkpoint (LFS)
 │
 ├── pipeline/                           ← audio embedding extraction (training only)
-│   ├── extract_embeddings.py
-│   ├── modal_extract.py
-│   └── split_dataset.py
+│   ├── extract_embeddings.py           ← YAMNet feature extraction + caching
+│   ├── preprocessing.py                ← audio normalisation utilities (used by tests)
+│   ├── modal_extract.py                ← optional: run extraction on Modal cloud GPU
+│   └── split_dataset.py                ← stratified 70/15/15 train/val/test split
 │
 ├── training/
-│   ├── train_head.py
-│   ├── evaluate_test.py
+│   ├── train_head.py                   ← Dense head training (local)
+│   ├── evaluate_test.py                ← test-set evaluation + metrics
 │   └── modal_train_yolo.py             ← YOLOv11s fine-tuning on Modal A100
 │
 ├── experiments/
@@ -114,14 +115,18 @@ Threshold sweep at IoU-match ≥ 0.50, see `experiments/plots/yolo_threshold_swe
 │       └── yolo_threshold_sweep/       ← vision: PR curve, F1 vs threshold, IoU grid
 │
 ├── configs/
-│   ├── yamnet_pipeline.yaml
-│   └── experiment_template.yaml
+│   └── yamnet_pipeline.yaml            ← Modal volume paths + dataset config
 │
 ├── scripts/
 │   ├── dev.sh                          ← start full stack (Linux/Mac)
-│   └── dev.ps1                         ← start full stack (Windows)
+│   ├── dev.ps1                         ← start full stack (Windows)
+│   ├── prepare_vision_data.py          ← merge 4 datasets into YOLO format
+│   ├── upload_to_modal.py              ← push vision dataset to Modal volume
+│   └── sync_weights.py                 ← pull trained checkpoint from Modal volume
 │
 └── tests/
+    ├── test_preprocessing.py
+    ├── test_split_dataset.py
     ├── test_extract_embeddings.py
     └── test_yamnet_integration.py
 ```
@@ -163,6 +168,12 @@ cp .env.example .env
 # Edit .env — set ABLY_API_KEY and JWT_SECRET at minimum
 ```
 
+| Variable | Required for | What happens without it |
+|---|---|---|
+| `ABLY_API_KEY` | Live dashboard alerts | Inference still runs and writes JSONL logs; dashboard does not update in real time |
+| `JWT_SECRET` | API authentication | Backend starts but login tokens are signed with the insecure placeholder |
+| `S3_BUCKET` + AWS credentials | Production audio/video upload | S3 upload is silently skipped; demo uses local file serving via FastAPI `/media` instead |
+
 ### 3. Full stack
 
 ```bash
@@ -200,7 +211,7 @@ demo_data/audio_gun.wav  →  Stage 1: YAMNet + Dense head
                                 prob=0.758 ≥ 0.64  →  GUNSHOT DETECTED
                                 Ably: audio:detected  +  audio:snippet
                              ↓
-demo_data/video_gun.mp4  →  Stage 2: YOLOv11s (conf ≥ 0.35, 4-of-6 gate)
+demo_data/video_gun.mp4  →  Stage 2: YOLOv11s (conf ≥ 0.35, 3-of-4 gate)
                                 conf=0.627 → 0.759, count=2
                                 Ably: video:detected  +  video:segment
 ```
@@ -269,11 +280,21 @@ for a video path. Press `Ctrl+C` to stop.
 | `--location` | `Cafeteria` | Label sent in every Ably message |
 | `--audio_model` | `models/saved_weights/dense_head_best.keras` | Audio head weights |
 | `--video_model` | `models/yolo_finetuned/best.pt` | YOLO weights |
+| `--iou` | `0.45` | NMS IoU threshold for YOLO |
+| `--imgsz` | `1280` | YOLO inference resolution |
+| `--kofn_k` | `3` | Positive frames required in temporal gate |
+| `--kofn_n` | `4` | Rolling window size for temporal gate |
 | `--no_sahi` | off | Disable tiled inference (Windows stability fix) |
 | `--no_pose` | off | Disable pose-overlap FP filter |
 | `--live` | off | Live-mic mode instead of REPL file mode |
+| `--device` | system default | Mic device index (live mode only) |
 | `--show` | off | Open OpenCV window during video stage |
+| `--channel` | `gunshot-detection` | Ably channel name |
 | `--ably_key` | `$ABLY_API_KEY` | Override env var |
+| `--log_file` | `inference/cascade_detections.jsonl` | Audio detection log |
+| `--video_log_file` | `vision/cascade_detections.jsonl` | Video detection log |
+| `--s3_bucket` | `None` | S3 bucket for media upload (production) |
+| `--aws_region` | `us-east-1` | AWS region for S3 |
 
 ---
 
@@ -301,7 +322,7 @@ for a video path. Press `Ctrl+C` to stop.
 ```
 
 Both components have a 5-second alert cooldown. The vision component also
-uses a 4-of-6 temporal gate — a gun must appear in 4 out of 6 consecutive
+uses a 3-of-4 temporal gate — a gun must appear in 3 out of 4 consecutive
 frames before an alert fires, suppressing single-frame false positives.
 
 ### Ably message format
@@ -310,20 +331,24 @@ frames before an alert fires, suppressing single-frame false positives.
 |---|---|
 | `audio:detected` | `audio:detected:{location}:{prob}` |
 | `audio:snippet` | `audio:snippet:{location}:{url}` |
-| `video:detected` | `video:detected:{location}:{conf}` |
+| `video:detected` | `video:detected:{location}:{conf}:{count}` |
 | `video:segment` | `video:segment:{location}:{url}` |
 | `video:negative` | `video:negative:{location}` |
 
 ### Environment variables
 
-| Variable | Required | Description |
+| Variable | Used by | Description |
 |---|---|---|
-| `ABLY_API_KEY` | For WS alerts | Ably API key (or pass `--ably_key`) |
-| `AWS_ACCESS_KEY_ID` | For S3 upload | AWS credentials |
-| `AWS_SECRET_ACCESS_KEY` | For S3 upload | |
-| `AWS_DEFAULT_REGION` | For S3 upload | Falls back to `--aws_region` arg |
-| `JWT_SECRET` | API auth | Backend JWT signing key |
-| `DATABASE_URL` | API persistence | Defaults to `sqlite:///data/tacticaleye.db` |
+| `ABLY_API_KEY` | inference, vision, cascade, API | Ably API key (or pass `--ably_key`). Without it, inference runs in log-only mode. |
+| `JWT_SECRET` | API auth | Backend JWT signing key. Change before deploying. |
+| `DATABASE_URL` | API persistence | Defaults to `sqlite:///data/tacticaleye.db`. Set to a Postgres URL for production. |
+| `S3_BUCKET` | inference, vision, cascade, API | S3 bucket name. **Production only** — omit in dev; local file serving is used instead. |
+| `AWS_ACCESS_KEY_ID` | S3 upload | Standard boto3 credential env var. |
+| `AWS_SECRET_ACCESS_KEY` | S3 upload | Standard boto3 credential env var. |
+| `AWS_DEFAULT_REGION` | S3 upload | Falls back to `us-east-1` or `--aws_region` arg. |
+| `MODAL_TOKEN_ID` | Modal GPU training | Required for `modal run` commands. |
+| `MODAL_TOKEN_SECRET` | Modal GPU training | Required for `modal run` commands. |
+| `FASTAPI_BASE_URL` | cascade | Base URL of the FastAPI backend for stable media links. Defaults to `http://localhost:8000`. |
 
 > **Never hardcode credentials.** All secrets are read from environment variables only.
 
@@ -377,12 +402,17 @@ python -m inference.live_inference --location "Main Entrance" --s3_bucket my-buc
 | Flag | Default | Description |
 |---|---|---|
 | `--model_path` | `models/saved_weights/dense_head_best.keras` | Head weights |
-| `--threshold` | `0.64` | Min probability to alert |
-| `--device` | `None` | sounddevice input device index |
-| `--location` | `unknown` | Label sent in every Ably message |
+| `--threshold` | `0.64` | Min gunshot probability to alert |
+| `--location` | `Cafeteria` | Label sent in every Ably message |
+| `--device` | system default | sounddevice input device index |
 | `--channel` | `gunshot-detection` | Ably channel name |
 | `--ably_key` | `$ABLY_API_KEY` | Override env var |
-| `--s3_bucket` | `None` | Omit to skip S3 upload |
+| `--log_file` | `inference/detections.jsonl` | Append detections to this JSONL file |
+| `--s3_bucket` | `None` | S3 bucket for audio snippet upload (production) |
+| `--aws_region` | `us-east-1` | AWS region for S3 |
+| `--run` | off | Start inference engine on a UDP socket (no mic) |
+| `--demo_file` | `None` | Audio file to stream to a `--run` listener |
+| `--port` | `9999` | UDP port for `--run` / `--demo_file` IPC |
 
 ---
 
@@ -398,7 +428,7 @@ Video source (one of):
   YOLOv11s → bounding boxes + confidence scores
           ↓
   FP-reduction stack:
-    1. Temporal 4-of-6 gate     ← gun must appear in 4 of 6 consecutive frames
+    1. Temporal 3-of-4 gate     ← gun must appear in 3 of 4 consecutive frames
     2. SAHI tiled inference     ← improves recall on small/distant guns
     3. Pose-overlap filter      ← suppresses detections not near a hand region
           ↓
@@ -431,12 +461,17 @@ python -m vision.live_inference \
 | `--iou` | `0.45` | NMS IoU threshold |
 | `--imgsz` | `1280` | Inference resolution |
 | `--source` | `0` | `0` = webcam, or path to video file |
-| `--show` | `False` | Open OpenCV window with annotated feed |
+| `--location` | `Cafeteria` | Label sent in every Ably message |
+| `--show` | off | Open OpenCV window with annotated feed |
 | `--no_sahi` | off | Disable SAHI tiled inference |
 | `--no_pose` | off | Disable pose-overlap FP filter |
-| `--location` | `unknown` | Label sent in every Ably message |
+| `--kofn_k` | `3` | Positive frames required in temporal gate |
+| `--kofn_n` | `4` | Rolling window size for temporal gate |
+| `--channel` | `gunshot-detection` | Ably channel name |
 | `--ably_key` | `$ABLY_API_KEY` | Override env var |
-| `--s3_bucket` | `None` | Omit to skip S3 upload |
+| `--log_file` | `vision/detections.jsonl` | Append detections to this JSONL file |
+| `--s3_bucket` | `None` | S3 bucket for frame upload (production) |
+| `--aws_region` | `us-east-1` | AWS region for S3 |
 
 ---
 
@@ -493,9 +528,21 @@ python -m experiments.threshold_sweep
 
 ### YOLOv11s (Modal cloud GPU)
 
+Requires a Modal account. Set `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in `.env`
+(or export them in your shell). Fine-tuning runs on 2× A100-80GB (~4–5 hours).
+
 ```bash
-# Requires a Modal account — fine-tuning runs on an A100-80GB
-modal run training/modal_train_yolo.py
+# 1. Merge the four source datasets into YOLO format
+python scripts/prepare_vision_data.py
+
+# 2. Upload the merged dataset to a Modal persistent volume
+python scripts/upload_to_modal.py
+
+# 3. Launch fine-tuning (detach flag keeps it running after you close the terminal)
+modal run training/modal_train_yolo.py --detach
+
+# 4. Pull the best checkpoint back to models/yolo_finetuned/best.pt
+python scripts/sync_weights.py
 ```
 
 ---
