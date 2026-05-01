@@ -299,7 +299,7 @@ def submit_video_path(
             load_dotenv()
 
             from inference.config import YOLO_WEIGHTS_PATH
-            from inference.cascade import infer_video_file, _LocalFileServer
+            from inference.cascade import infer_video_file, _LocalFileServer, VIDEO_DEFAULT_THRESH
             from inference.live_inference import AblyPublisher, DEFAULT_CHANNEL
 
             ably_key = os.environ.get("ABLY_API_KEY", "")
@@ -315,7 +315,7 @@ def submit_video_path(
                     path=Path(target_video_path),
                     location=target_location,
                     video_model=YOLO_WEIGHTS_PATH,
-                    threshold=0.60,
+                    threshold=VIDEO_DEFAULT_THRESH,
                     iou=0.45,
                     imgsz=1280,
                     publisher=publisher,

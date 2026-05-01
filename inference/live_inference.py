@@ -414,19 +414,10 @@ class AudioCapture:
 
     def run_demo_file_inprocess(self, file_path: Path) -> None:
         """Single-terminal demo: load file, play audio, run inference here."""
-        import soundfile as sf
-        import numpy as np
         import sounddevice as sd
 
         logger.info("Loading %s ...", file_path)
-        raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
-        if raw.ndim == 2:
-            raw = raw.mean(axis=1)
-        if orig_sr != SAMPLE_RATE:
-            import scipy.signal as ss
-            n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
-            raw = ss.resample(raw, n_samples).astype("float32")
-        audio = raw
+        audio = _load_audio(file_path)
         duration  = len(audio) / SAMPLE_RATE
         n_chunks  = len(audio) // CHUNK_SAMPLES
         chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
@@ -497,6 +488,23 @@ class AudioCapture:
 
 
 # ---------------------------------------------------------------------------
+# Audio file loader
+# ---------------------------------------------------------------------------
+
+def _load_audio(file_path: Path) -> np.ndarray:
+    """Load an audio file, mix to mono, and resample to SAMPLE_RATE."""
+    import soundfile as sf
+    import scipy.signal as ss
+    raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
+    if raw.ndim == 2:
+        raw = raw.mean(axis=1)
+    if orig_sr != SAMPLE_RATE:
+        n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
+        raw = ss.resample(raw, n_samples).astype("float32")
+    return raw
+
+
+# ---------------------------------------------------------------------------
 # Demo file sender (--demo_file, standalone — no model needed)
 # ---------------------------------------------------------------------------
 
@@ -526,18 +534,10 @@ def send_demo_file(file_path: Path, port: int) -> None:
     over UDP to the --run listener at 127.0.0.1:{port}.
     No model is loaded here — inference happens in the listener process.
     """
-    import soundfile as sf
-    import scipy.signal as ss
     import sounddevice as sd
 
     logger.info("Loading %s ...", file_path)
-    raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
-    if raw.ndim == 2:
-        raw = raw.mean(axis=1)
-    if orig_sr != SAMPLE_RATE:
-        n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
-        raw = ss.resample(raw, n_samples).astype("float32")
-    audio = raw
+    audio = _load_audio(file_path)
     duration   = len(audio) / SAMPLE_RATE
     n_chunks   = len(audio) // CHUNK_SAMPLES
     chunk_dur  = CHUNK_SAMPLES / SAMPLE_RATE

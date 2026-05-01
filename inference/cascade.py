@@ -305,8 +305,8 @@ def infer_video_file(
     file_server: "_LocalFileServer | None" = None,
     use_sahi: bool = True,
     use_pose: bool = True,
-    kofn_k: int  = 4,
-    kofn_n: int  = 6,
+    kofn_k: int  = 3,
+    kofn_n: int  = 4,
 ) -> tuple[bool, float, int]:
     """
     Process a video file through YOLO.
@@ -382,8 +382,8 @@ def prompt_and_run_video(
     show: bool,
     use_sahi: bool = True,
     use_pose: bool = True,
-    kofn_k: int  = 4,
-    kofn_n: int  = 6,
+    kofn_k: int  = 3,
+    kofn_n: int  = 4,
     file_server: "_LocalFileServer | None" = None,
 ) -> None:
     try:

@@ -788,11 +788,6 @@ class VideoCapture:
             logger.exception("ffmpeg re-encode error; keeping original file")
             tmp.unlink(missing_ok=True)
 
-    def run_demo_file(self, file_path: Path) -> None:
-        """Process a video file frame-by-frame (no webcam required)."""
-        self._source = str(file_path)
-        self.start()
-
 
 # ---------------------------------------------------------------------------
 # CLI
