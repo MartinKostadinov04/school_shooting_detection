@@ -19,12 +19,13 @@ export const Route = createFileRoute("/police")({
 });
 
 function PoliceSchoolsPage() {
+  // All hooks must be called unconditionally before any early return.
   const childMatches = useChildMatches();
-  if (childMatches.length > 0) return <Outlet />;
-
   const incidents = useStore((s) => s.incidents);
   const connection = useStore((s) => s.connection);
   const activeCount = incidents.filter((i) => i.status !== "RESOLVED").length;
+
+  if (childMatches.length > 0) return <Outlet />;
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground">

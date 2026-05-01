@@ -11,14 +11,24 @@ type Tab = "chat" | "report";
 export function CommunicationWindow({
   viewerRole,
   filterIncidentId,
+  forceInline = false,
 }: {
   viewerRole: "school" | "police";
   filterIncidentId?: string;
+  /**
+   * Force the inline (non-floating) layout regardless of role. Used by the
+   * shared incident-detail panel so both school and police see the comms
+   * embedded inside the incident view rather than as a global floating bubble.
+   */
+  forceInline?: boolean;
 }) {
   const messages = useStore((s) => s.messages);
   const sendMessage = useStore((s) => s.sendMessage);
 
-  const [open, setOpen] = useState(viewerRole === "police");
+  // Police-mode and any forceInline caller render inline (no toggle).
+  const inline = viewerRole === "police" || forceInline;
+
+  const [open, setOpen] = useState(inline);
   const [tab, setTab] = useState<Tab>("chat");
   const [text, setText] = useState("");
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -43,19 +53,17 @@ export function CommunicationWindow({
     setText("");
   };
 
-  // Police-mode: render inline (no toggle)
-  const inline = viewerRole === "police";
-
   if (inline) {
+    const inlineTitle = viewerRole === "school" ? "Police Comms" : "School Comms";
     return (
       <div className="flex h-full flex-col rounded-md border border-border bg-surface">
-        <Header title="School Comms" tab={tab} setTab={setTab} showReportTab={false} />
+        <Header title={inlineTitle} tab={tab} setTab={setTab} showReportTab={false} />
         <Body
           scrollerRef={scrollerRef}
           messages={visible}
           viewerRole={viewerRole}
           tab="chat"
-          reportedBy="police"
+          reportedBy={viewerRole}
           onReportSubmitted={() => setTab("chat")}
         />
         <Composer text={text} setText={setText} onSubmit={send} />

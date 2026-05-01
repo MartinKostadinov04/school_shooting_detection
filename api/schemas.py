@@ -7,25 +7,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 
-# ---------- Auth ----------
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class AuthUser(BaseModel):
-    email: str
-    role: Literal["school", "police"]
-    displayName: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: AuthUser
-
-
 # ---------- Devices ----------
 
 DeviceType   = Literal["camera", "microphone"]
@@ -83,6 +64,9 @@ class IncidentOut(BaseModel):
     audioUrl: Optional[str] = None
     videoUrl: Optional[str] = None
     videoConfirmed: Optional[bool] = None
+    # Peak number of simultaneously visible guns from the video segment.
+    # camelCase here mirrors the TypeScript Incident.gunCount field.
+    gunCount: Optional[int] = None
     reportedBy: Optional[str] = None
     timeline: list[TimelineEntryOut] = []
 
@@ -99,6 +83,9 @@ class IncidentCreate(BaseModel):
     probability: Optional[float] = None
     description: Optional[str] = None
     reported_by: Optional[str] = None
+    # Optional on creation — VIDEO-AI detections may already know the count;
+    # AUDIO-AI ingests have no count yet and will PATCH it in later.
+    gun_count: Optional[int] = None
 
 
 class IncidentUpdate(BaseModel):
@@ -106,6 +93,12 @@ class IncidentUpdate(BaseModel):
     audio_url: Optional[str] = None
     video_url: Optional[str] = None
     video_confirmed: Optional[bool] = None
+    gun_count: Optional[int] = None
+
+
+class VideoPathSubmit(BaseModel):
+    video_path: str
+    location: Optional[str] = None
 
 
 # ---------- Messages ----------

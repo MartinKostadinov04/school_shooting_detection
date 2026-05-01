@@ -39,7 +39,7 @@ Common flags
 ────────────────────────────────────────────────────────────────────────────
   --location          default location label          (default: Cafeteria)
   --audio_threshold   gunshot probability threshold   (default: 0.64)
-  --video_threshold   YOLO confidence threshold       (default: 0.60)
+  --video_threshold   YOLO confidence threshold       (default: 0.35)
   --audio_model       path to .keras weights
   --video_model       path to .pt weights
   --ably_key / ABLY_API_KEY
@@ -47,20 +47,27 @@ Common flags
 """
 
 import argparse
+import http.server
 import json
 import logging
 import os
 import queue
+import socket
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from pipeline.extract_embeddings import load_yamnet, extract_embedding
+from inference.config import YOLO_WEIGHTS_PATH
 from inference.live_inference import (
     AblyPublisher,
     AudioCapture,
@@ -83,11 +90,106 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DEFAULT_MODEL  = Path("models/saved_weights/dense_head_best.keras")
 AUDIO_DEFAULT_LOG    = Path("inference/cascade_detections.jsonl")
-VIDEO_DEFAULT_MODEL  = Path("YOLO_hugging-main/best.pt")
+VIDEO_DEFAULT_MODEL  = YOLO_WEIGHTS_PATH
 VIDEO_DEFAULT_LOG    = Path("vision/cascade_detections.jsonl")
-VIDEO_DEFAULT_THRESH = 0.60
+VIDEO_DEFAULT_THRESH = 0.35  # threshold sweep on test set: best F1=0.915 at conf=0.35
 VIDEO_DEFAULT_IOU    = 0.45
 VIDEO_DEFAULT_IMGSZ  = 1280
+
+# FastAPI backend base URL — media in demo_data/ is served from here under
+# /api/media/ so the URL survives the cascade process exiting.
+# Override with the FASTAPI_BASE_URL env var if the backend is on a different host.
+FASTAPI_BASE_URL  = os.environ.get("FASTAPI_BASE_URL", "http://localhost:8000")
+FASTAPI_MEDIA_URL = f"{FASTAPI_BASE_URL}/media"
+DEMO_DATA_DIR     = Path("demo_data").resolve()   # files here → stable URLs
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def _stable_url(file_path: Path, file_server: "_LocalFileServer | None") -> str:
+    """
+    Return the best URL for ``file_path``:
+
+    * If the file lives inside ``demo_data/``, return a stable FastAPI URL
+      (``http://localhost:8000/api/media/<relative>``) that survives cascade
+      process exits.  The /api/media route is mounted before the SPA catch-all
+      so it is never shadowed by index.html.
+    * Otherwise fall back to the ephemeral ``_LocalFileServer`` URL, or the
+      absolute path string as a last resort.
+    """
+    try:
+        rel = file_path.resolve().relative_to(DEMO_DATA_DIR)
+        return f"{FASTAPI_MEDIA_URL}/{rel.as_posix()}"
+    except ValueError:
+        if file_server:
+            return file_server.url_for(file_path)
+        return str(file_path.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Local file server — serves audio/video files to the browser for playback
+# ---------------------------------------------------------------------------
+
+class _LocalFileServer:
+    """
+    Minimal HTTP server that serves arbitrary local files by absolute path.
+    URL format: http://localhost:{port}/file?path=<url-encoded-absolute-path>
+
+    Started once when cascade.py launches; all file references use the same port.
+    CORS header is added so the React frontend (on a different port) can fetch.
+    """
+
+    def __init__(self, port: int = 0):
+        self._port   = port
+        self._server = None
+        self._thread = None
+
+    def start(self) -> int:
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                paths  = params.get("path", [])
+                if not paths:
+                    self.send_error(400, "Missing ?path= parameter")
+                    return
+                file_path = Path(urllib.parse.unquote(paths[0]))
+                if not file_path.exists() or not file_path.is_file():
+                    self.send_error(404, f"File not found: {file_path}")
+                    return
+                suffix = file_path.suffix.lower()
+                mime   = {
+                    ".wav": "audio/wav", ".mp3": "audio/mpeg",
+                    ".mp4": "video/mp4", ".webm": "video/webm",
+                    ".avi": "video/x-msvideo", ".mov": "video/quicktime",
+                }.get(suffix, "application/octet-stream")
+                data = file_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_):
+                pass   # suppress access logs
+
+        self._server = http.server.HTTPServer(("localhost", self._port), _Handler)
+        self._port   = self._server.server_address[1]   # actual port if 0 was requested
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        logger.info("Local file server started on http://localhost:%d", self._port)
+        return self._port
+
+    def url_for(self, file_path: Path) -> str:
+        encoded = urllib.parse.quote(str(file_path.resolve()))
+        return f"http://localhost:{self._port}/file?path={encoded}"
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +209,24 @@ def infer_audio_file(
     threshold: float,
     publisher: "AblyPublisher | None",
     log_file: Path,
+    file_server: "_LocalFileServer | None" = None,
 ) -> tuple[bool, float]:
     """
     Process an audio file through the sliding-window pipeline.
     Returns (detected, max_prob).
     Publishes audio:detected on the first threshold crossing (5 s cooldown).
+    Publishes audio:snippet with a localhost URL so the police page can play it.
     """
-    import librosa
-    audio, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
+    import soundfile as sf
+    import scipy.signal as ss
+
+    raw, orig_sr = sf.read(str(path), dtype="float32", always_2d=False)
+    if raw.ndim == 2:
+        raw = raw.mean(axis=1)
+    if orig_sr != SAMPLE_RATE:
+        n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
+        raw = ss.resample(raw, n_samples).astype("float32")
+    audio = raw
     n_chunks  = len(audio) // CHUNK_SAMPLES
     chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
 
@@ -150,6 +262,11 @@ def infer_audio_file(
             if publisher:
                 publisher.publish("audio:detected", f"audio:detected:{location}:{prob:.4f}")
                 logger.info("Ably  →  audio:detected:%s  prob=%.4f", location, prob)
+                # Build a stable URL for the audio snippet — prefer the FastAPI
+                # static mount (/demo_data/...) so the URL survives cascade exit.
+                snippet_url = _stable_url(path, file_server)
+                publisher.publish("audio:snippet", f"audio:snippet:{location}:{snippet_url}")
+                logger.info("Ably  →  audio:snippet:%s  url=%s", location, snippet_url)
 
             try:
                 log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -185,11 +302,23 @@ def infer_video_file(
     s3_bucket: "str | None",
     aws_region: str,
     show: bool,
-) -> tuple[bool, float]:
+    file_server: "_LocalFileServer | None" = None,
+    use_sahi: bool = True,
+    use_pose: bool = True,
+    kofn_k: int  = 3,
+    kofn_n: int  = 4,
+) -> tuple[bool, float, int]:
     """
     Process a video file through YOLO.
-    Returns (detected, max_conf).
-    Publishes video:detected if gun found; caller publishes video:negative if not.
+
+    Returns ``(detected, max_conf, max_count)`` where ``max_count`` is the
+    peak number of simultaneously visible guns across the whole video.
+    Publishes ``video:detected`` if a gun is found; caller publishes
+    ``video:negative`` if not. The published ``video:segment`` URL points at
+    the *annotated* MP4 (bboxes + per-box confidences baked in by VideoCapture).
+
+    The FP-reduction stack toggles (``use_sahi``, ``use_pose``, ``kofn_*``)
+    are forwarded to :class:`VideoCapture` — see ``vision/live_inference.py``.
     """
     cap = VideoCapture(
         model_path=video_model,
@@ -203,16 +332,30 @@ def infer_video_file(
         aws_region=aws_region,
         source=str(path),
         show=show,
+        use_sahi=use_sahi,
+        use_pose=use_pose,
+        kofn_k=kofn_k,
+        kofn_n=kofn_n,
     )
     print(f"\n  ▶  STAGE-2  '{path.name}'  threshold={threshold:.2f}\n")
     cap.start()
-    detected, max_conf = cap.result
+    detected, max_conf, max_count = cap.result
     if detected:
-        print(f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  loc={location}")
+        print(
+            f"\n  🔴  GUN DETECTED  conf={max_conf:.3f}  count={max_count}  loc={location}"
+        )
         print(f"  → Police alert WITH visual reference\n")
+        # Prefer the annotated MP4 (bboxes baked in) over the raw input.
+        # Use a stable FastAPI URL (/demo_data/...) so the video keeps playing
+        # after the cascade exits and the ephemeral _LocalFileServer dies.
+        if publisher:
+            seg_path = cap.annotated_path or path
+            segment_url = _stable_url(seg_path, file_server)
+            publisher.publish("video:segment", f"video:segment:{location}:{segment_url}")
+            logger.info("Ably  →  video:segment:%s  url=%s", location, segment_url)
     else:
         print(f"\n  ■  No gun detected  (max_conf={max_conf:.3f})\n")
-    return detected, max_conf
+    return detected, max_conf, max_count
 
 
 def publish_video_negative(location: str, publisher: "AblyPublisher | None") -> None:
@@ -237,6 +380,11 @@ def prompt_and_run_video(
     s3_bucket: "str | None",
     aws_region: str,
     show: bool,
+    use_sahi: bool = True,
+    use_pose: bool = True,
+    kofn_k: int  = 3,
+    kofn_n: int  = 4,
+    file_server: "_LocalFileServer | None" = None,
 ) -> None:
     try:
         path_str = input("  Video path for visual confirmation (Enter to skip): ").strip()
@@ -254,7 +402,7 @@ def prompt_and_run_video(
         publish_video_negative(location, publisher)
         return
 
-    detected, _ = infer_video_file(
+    detected, _max_conf, _max_count = infer_video_file(
         path=path,
         location=location,
         video_model=video_model,
@@ -266,6 +414,11 @@ def prompt_and_run_video(
         s3_bucket=s3_bucket,
         aws_region=aws_region,
         show=show,
+        file_server=file_server,
+        use_sahi=use_sahi,
+        use_pose=use_pose,
+        kofn_k=kofn_k,
+        kofn_n=kofn_n,
     )
     if not detected:
         publish_video_negative(location, publisher)
@@ -300,6 +453,18 @@ def main() -> None:
                         help="Run live mic in background instead of REPL file mode.")
     parser.add_argument("--device",          type=int,   default=None,
                         help="sounddevice mic index (--live only).")
+    # FP-reduction stack toggles (forwarded to vision.live_inference.VideoCapture)
+    parser.add_argument("--no_sahi",         action="store_true",
+                        help="Disable SAHI tiled inference. SAHI gives ~10x mAP "
+                             "on small CCTV guns (Hnoohom 2022) but its torch "
+                             "tensor path is unstable on some Windows + cv2 + "
+                             "numpy combinations.")
+    parser.add_argument("--no_pose",         action="store_true",
+                        help="Disable the pose-overlap (hand-region) FP filter.")
+    parser.add_argument("--kofn_k",          type=int,   default=3,
+                        help="Frames required positive in the temporal gate.")
+    parser.add_argument("--kofn_n",          type=int,   default=4,
+                        help="Rolling temporal-gate window size.")
     args = parser.parse_args()
 
     for label, path in [("Audio model", args.audio_model), ("Video model", args.video_model)]:
@@ -317,6 +482,10 @@ def main() -> None:
     else:
         logger.warning("No Ably key — WS alerts disabled (set --ably_key or ABLY_API_KEY)")
 
+    # Local file server — serves audio/video files to the browser for playback
+    file_server = _LocalFileServer()
+    file_server.start()
+
     # Shared kwargs forwarded to every video stage call
     video_kwargs = dict(
         video_model=args.video_model,
@@ -328,6 +497,11 @@ def main() -> None:
         s3_bucket=args.s3_bucket,
         aws_region=args.aws_region,
         show=args.show,
+        file_server=file_server,
+        use_sahi=not args.no_sahi,
+        use_pose=not args.no_pose,
+        kofn_k=args.kofn_k,
+        kofn_n=args.kofn_n,
     )
 
     logger.info("Loading YAMNet ...")
@@ -413,6 +587,7 @@ def main() -> None:
                     threshold=args.audio_threshold,
                     publisher=publisher,
                     log_file=args.log_file,
+                    file_server=file_server,
                 )
 
                 if detected:
@@ -425,6 +600,7 @@ def main() -> None:
 
     if publisher:
         publisher.close()
+    file_server.stop()
     logger.info("Done.")
 
 

@@ -61,6 +61,8 @@ export interface Incident {
   audioUrl?: string;
   videoUrl?: string;
   videoConfirmed?: boolean;
+  /** Peak number of simultaneously visible guns across the video segment. */
+  gunCount?: number;
   reportedBy?: string;
   timeline: IncidentTimelineEntry[];
 }
@@ -109,6 +111,8 @@ export interface ParsedAblyEvent {
   location: string;
   url?: string;
   probability?: number;
+  /** Number of guns reported by the video worker (only on video:detected). */
+  count?: number;
   chatMsg?: ChatMessage;
   raw: string;
 }

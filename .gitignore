@@ -21,12 +21,19 @@ env/
 # Data — raw audio files, processed embeddings, splits, SQLite DB
 data/
 
-# Trained model weights (the committed best checkpoint is force-added)
-models/saved_weights/
+# Trained model weights
+# models/saved_weights/ is NOT ignored — dense_head_best.keras is tracked via LFS
+models/yolo_finetuned/last.pt  # large duplicate of best.pt — not needed in repo
 
-# Experiment run logs
+# Experiment run logs (JSON/CSV artefacts — not source)
 experiments/runs/*.json
 experiments/runs/*.csv
+
+# Inference detection logs (runtime output, not source)
+inference/detections.jsonl
+inference/cascade_detections.jsonl
+vision/detections.jsonl
+vision/cascade_detections.jsonl
 
 # TensorFlow Hub cache
 /tmp/tfhub_modules/
@@ -47,6 +54,7 @@ modal.toml
 
 # Frontend
 frontend/node_modules/
+frontend/.env
 frontend/.env.local
 frontend/dist/
 frontend/.output/

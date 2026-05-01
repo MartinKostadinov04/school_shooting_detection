@@ -1,9 +1,16 @@
+import logging
+import os
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from api.database import get_db
 from api import models, schemas
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -55,6 +62,7 @@ def _incident_out(inc: models.Incident) -> schemas.IncidentOut:
         audioUrl=inc.audio_url,
         videoUrl=inc.video_url,
         videoConfirmed=inc.video_confirmed,
+        gunCount=inc.gun_count,
         reportedBy=inc.reported_by,
         timeline=[_timeline_out(t) for t in inc.timeline],
     )
@@ -205,6 +213,7 @@ def create_incident(body: schemas.IncidentCreate, db: Session = Depends(get_db))
         probability=body.probability,
         description=body.description,
         reported_by=body.reported_by,
+        gun_count=body.gun_count,
     )
     db.add(inc)
     db.flush()
@@ -253,7 +262,77 @@ def update_incident(
                 incident_id=inc.id, timestamp=now,
                 label="Video AI confirmed", detail=f"Visual confirmation at {inc.location}",
             ))
+    if body.gun_count is not None:
+        inc.gun_count = body.gun_count
     db.commit()
+    db.refresh(inc)
+    return _incident_out(inc)
+
+
+@router.post("/incidents/{incident_id}/submit-video", response_model=schemas.IncidentOut)
+def submit_video_path(
+    incident_id: str,
+    body: schemas.VideoPathSubmit,
+    db: Session = Depends(get_db),
+):
+    """Accept a video file path from the police page and queue it for YOLO inference.
+    The result arrives back via Ably (video:detected or video:negative)."""
+    inc = db.query(models.Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    db.add(models.IncidentTimeline(
+        incident_id=inc.id,
+        timestamp=datetime.now(timezone.utc),
+        label="Video path submitted",
+        detail=body.video_path,
+    ))
+    db.commit()
+
+    # Trigger video inference in a background thread so the HTTP response
+    # returns immediately. Results are published via Ably by cascade.py helpers.
+    target_location  = body.location or inc.location
+    target_video_path = body.video_path
+
+    def _run_video() -> None:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+
+            from inference.config import YOLO_WEIGHTS_PATH
+            from inference.cascade import infer_video_file, _LocalFileServer, VIDEO_DEFAULT_THRESH
+            from inference.live_inference import AblyPublisher, DEFAULT_CHANNEL
+
+            ably_key = os.environ.get("ABLY_API_KEY", "")
+            if not ably_key:
+                logger.warning("ABLY_API_KEY not set — skipping background video inference")
+                return
+
+            publisher   = AblyPublisher(ably_key, DEFAULT_CHANNEL)
+            file_server = _LocalFileServer()
+            file_server.start()
+            try:
+                infer_video_file(
+                    path=Path(target_video_path),
+                    location=target_location,
+                    video_model=YOLO_WEIGHTS_PATH,
+                    threshold=VIDEO_DEFAULT_THRESH,
+                    iou=0.45,
+                    imgsz=1280,
+                    publisher=publisher,
+                    log_file=Path("vision/cascade_detections.jsonl"),
+                    s3_bucket=os.environ.get("S3_BUCKET"),
+                    aws_region=os.environ.get("AWS_REGION", "us-east-1"),
+                    show=False,
+                    file_server=file_server,
+                )
+            finally:
+                publisher.close()
+        except Exception:
+            # Use logger.exception so the full stack trace lands in the API
+            # logs — silent .warning() is what kept this codepath broken.
+            logger.exception("Background video inference failed")
+
+    threading.Thread(target=_run_video, daemon=True).start()
     db.refresh(inc)
     return _incident_out(inc)
 

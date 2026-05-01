@@ -39,6 +39,7 @@ Usage
 
 import argparse
 import asyncio
+import http.server
 import io
 import json
 import logging
@@ -48,6 +49,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 import wave
 from typing import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -56,6 +58,9 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from pipeline.extract_embeddings import load_yamnet, extract_embedding
 
@@ -83,6 +88,68 @@ DEFAULT_DEMO_PORT   = 9999   # UDP port for --run / --demo_file IPC
 CHUNK_BYTES         = CHUNK_SAMPLES * 4  # float32 = 4 bytes per sample
 ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
 S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
+
+
+# ---------------------------------------------------------------------------
+# Local file server — serves audio files to the browser for in-page playback
+# ---------------------------------------------------------------------------
+
+class _LocalFileServer:
+    """
+    Minimal HTTP server that serves local files by absolute path.
+    URL format: http://localhost:{port}/file?path=<url-encoded-absolute-path>
+    CORS header added so the React frontend (different port) can fetch.
+    Started once; stopped after demo run completes.
+    """
+
+    def __init__(self, port: int = 0):
+        self._port   = port
+        self._server = None
+        self._thread = None
+
+    def start(self) -> int:
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                paths  = params.get("path", [])
+                if not paths:
+                    self.send_error(400, "Missing ?path= parameter")
+                    return
+                file_path = Path(urllib.parse.unquote(paths[0]))
+                if not file_path.exists() or not file_path.is_file():
+                    self.send_error(404, f"File not found: {file_path}")
+                    return
+                suffix = file_path.suffix.lower()
+                mime   = {
+                    ".wav": "audio/wav", ".mp3": "audio/mpeg",
+                    ".mp4": "video/mp4", ".webm": "video/webm",
+                }.get(suffix, "application/octet-stream")
+                data = file_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *_):
+                pass  # suppress access logs
+
+        self._server = http.server.HTTPServer(("localhost", self._port), _Handler)
+        self._port   = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        logger.info("Local file server started on http://localhost:%d", self._port)
+        return self._port
+
+    def url_for(self, file_path: Path) -> str:
+        encoded = urllib.parse.quote(str(file_path.resolve()))
+        return f"http://localhost:{self._port}/file?path={encoded}"
+
+    def stop(self):
+        if self._server:
+            self._server.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +258,7 @@ def _alert(
     s3_bucket: "str | None",
     aws_region: str,
     executor:  ThreadPoolExecutor,
+    local_snippet_url: "str | None" = None,
 ) -> None:
     record = {
         "event":       "gunshot_detected",
@@ -217,6 +285,11 @@ def _alert(
     # Ably: detection message (format: audio:detected:{location}:{prob})
     publisher.publish("audio:detected", f"audio:detected:{location}:{prob:.4f}")
     logger.info("Ably  →  audio:detected:%s  prob=%.4f", location, prob)
+
+    # Local file URL (demo mode) — publish immediately so the police page can play
+    if local_snippet_url:
+        publisher.publish("audio:snippet", f"audio:snippet:{location}:{local_snippet_url}")
+        logger.info("Ably  →  audio:snippet:%s (local file server)", location)
 
     # Ably: snippet message — submitted to bounded thread pool so the audio
     # thread is never blocked and thread count stays capped under sustained alerts.
@@ -252,21 +325,22 @@ class AudioCapture:
         device:      "int | None",
         on_detection: "Callable[[float, str, str], None] | None" = None,
     ):
-        self._yamnet          = yamnet_model
-        self._head            = head_model
-        self._threshold       = threshold
-        self._location        = location
-        self._log_file        = log_file
-        self._publisher       = publisher
-        self._s3_bucket       = s3_bucket
-        self._aws_region      = aws_region
-        self._device          = device
-        self._on_detection    = on_detection
-        self._buffer          = np.zeros(CLIP_SAMPLES, dtype=np.float32)
-        self._lock            = threading.Lock()
-        self._stream          = None
-        self._last_alert_time = 0.0
-        self._s3_executor     = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
+        self._yamnet            = yamnet_model
+        self._head              = head_model
+        self._threshold         = threshold
+        self._location          = location
+        self._log_file          = log_file
+        self._publisher         = publisher
+        self._s3_bucket         = s3_bucket
+        self._aws_region        = aws_region
+        self._device            = device
+        self._on_detection      = on_detection
+        self._local_snippet_url: "str | None" = None  # set by run_demo_file_inprocess
+        self._buffer            = np.zeros(CLIP_SAMPLES, dtype=np.float32)
+        self._lock              = threading.Lock()
+        self._stream            = None
+        self._last_alert_time   = 0.0
+        self._s3_executor       = ThreadPoolExecutor(max_workers=S3_UPLOAD_WORKERS)
 
     def _process_chunk(self, chunk: np.ndarray) -> float:
         """Core pipeline: update ring buffer, run inference, fire throttled alert if triggered."""
@@ -294,6 +368,7 @@ class AudioCapture:
                     s3_bucket=self._s3_bucket,
                     aws_region=self._aws_region,
                     executor=self._s3_executor,
+                    local_snippet_url=self._local_snippet_url,
                 )
                 if self._on_detection:
                     self._on_detection(prob, self._location, ts)
@@ -339,37 +414,42 @@ class AudioCapture:
 
     def run_demo_file_inprocess(self, file_path: Path) -> None:
         """Single-terminal demo: load file, play audio, run inference here."""
-        import soundfile as sf
-        import numpy as np
         import sounddevice as sd
 
         logger.info("Loading %s ...", file_path)
-        raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
-        if raw.ndim == 2:
-            raw = raw.mean(axis=1)
-        if orig_sr != SAMPLE_RATE:
-            import scipy.signal as ss
-            n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
-            raw = ss.resample(raw, n_samples).astype("float32")
-        audio = raw
+        audio = _load_audio(file_path)
         duration  = len(audio) / SAMPLE_RATE
         n_chunks  = len(audio) // CHUNK_SAMPLES
         chunk_dur = CHUNK_SAMPLES / SAMPLE_RATE
 
+        # Start a local HTTP server so the police page can stream the audio file
+        file_server = _LocalFileServer()
+        file_server.start()
+        self._local_snippet_url = file_server.url_for(file_path)
+
         print(f"\n▶  '{file_path.name}'  ({duration:.1f} s)  —  Ctrl+C to stop\n")
         sd.play(audio, samplerate=SAMPLE_RATE)
 
-        for i in range(n_chunks):
-            t0    = time.perf_counter()
-            chunk = audio[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES]
-            prob  = self._process_chunk(chunk)
-            print(f"  [{i * chunk_dur:5.1f}s]  prob={prob:.4f}", end="\r")
-            spent = time.perf_counter() - t0
-            if chunk_dur - spent > 0:
-                time.sleep(chunk_dur - spent)
+        try:
+            for i in range(n_chunks):
+                t0    = time.perf_counter()
+                chunk = audio[i * CHUNK_SAMPLES : (i + 1) * CHUNK_SAMPLES]
+                prob  = self._process_chunk(chunk)
+                print(f"  [{i * chunk_dur:5.1f}s]  prob={prob:.4f}", end="\r")
+                spent = time.perf_counter() - t0
+                if chunk_dur - spent > 0:
+                    time.sleep(chunk_dur - spent)
 
-        sd.wait()
-        print(f"\n\nDone. {n_chunks} chunks processed.")
+            sd.wait()
+            print(f"\n\nDone. {n_chunks} chunks processed.")
+            print(f"\n  File server live at http://localhost:{file_server._port}")
+            print("  Keep this window open so the police page can stream audio.")
+            print("  Ctrl+C to exit.\n")
+            while True:
+                time.sleep(1)
+        finally:
+            self._local_snippet_url = None
+            file_server.stop()
 
     def run_socket_listener(self, port: int) -> None:
         """
@@ -408,6 +488,23 @@ class AudioCapture:
 
 
 # ---------------------------------------------------------------------------
+# Audio file loader
+# ---------------------------------------------------------------------------
+
+def _load_audio(file_path: Path) -> np.ndarray:
+    """Load an audio file, mix to mono, and resample to SAMPLE_RATE."""
+    import soundfile as sf
+    import scipy.signal as ss
+    raw, orig_sr = sf.read(str(file_path), dtype="float32", always_2d=False)
+    if raw.ndim == 2:
+        raw = raw.mean(axis=1)
+    if orig_sr != SAMPLE_RATE:
+        n_samples = int(len(raw) * SAMPLE_RATE / orig_sr)
+        raw = ss.resample(raw, n_samples).astype("float32")
+    return raw
+
+
+# ---------------------------------------------------------------------------
 # Demo file sender (--demo_file, standalone — no model needed)
 # ---------------------------------------------------------------------------
 
@@ -437,11 +534,10 @@ def send_demo_file(file_path: Path, port: int) -> None:
     over UDP to the --run listener at 127.0.0.1:{port}.
     No model is loaded here — inference happens in the listener process.
     """
-    import librosa
     import sounddevice as sd
 
     logger.info("Loading %s ...", file_path)
-    audio, _ = librosa.load(str(file_path), sr=SAMPLE_RATE, mono=True)
+    audio = _load_audio(file_path)
     duration   = len(audio) / SAMPLE_RATE
     n_chunks   = len(audio) // CHUNK_SAMPLES
     chunk_dur  = CHUNK_SAMPLES / SAMPLE_RATE

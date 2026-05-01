@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { Eye, ArrowLeft } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eye, ArrowLeft, X } from "lucide-react";
 import { useAbly } from "@/hooks/useAbly";
 import { NotificationBar } from "@/components/notifications/NotificationBar";
 import { SchoolMap } from "@/components/map/SchoolMap";
 import { DeviceTable } from "@/components/devices/DeviceTable";
 import { CommunicationWindow } from "@/components/comms/CommunicationWindow";
+import { IncidentDetail } from "@/components/incidents/IncidentDetail";
 import { useStore } from "@/lib/incidentStore";
 import { design } from "@/config/design";
 import { ConnectionIndicator } from "@/components/ui/ConnectionIndicator";
@@ -28,6 +29,12 @@ function SchoolPage() {
   const loadFromApi = useStore((s) => s.loadFromApi);
   const incidents   = useStore((s) => s.incidents);
   const connection  = useStore((s) => s.connection);
+
+  // Selected incident drives the detail drawer that overlays the
+  // NotificationBar on the right edge of the page.
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
+  const selectedIncident =
+    incidents.find((i) => i.id === selectedIncidentId) ?? null;
 
   useEffect(() => { loadFromApi(); }, []);
 
@@ -74,9 +81,51 @@ function SchoolPage() {
             </div>
           </div>
         </main>
-        <NotificationBar />
+
+        {/* Right rail: notification bar by default, or the IncidentDetail
+            drawer when the user clicks a notification. The drawer occupies
+            the same horizontal slot so the layout doesn't reflow. */}
+        {selectedIncident ? (
+          <aside
+            className="flex h-full flex-col border-l border-border bg-sidebar"
+            style={{ width: design.layout.notificationBarWidth }}
+          >
+            <header className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedIncidentId(null)}
+                  className="flex h-6 w-6 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors hover:border-tactical-amber/60 hover:text-tactical-amber"
+                  aria-label="Close incident"
+                >
+                  <ArrowLeft className="h-3 w-3" />
+                </button>
+                <h2 className="font-mono text-xs uppercase tracking-widest text-foreground">
+                  Incident · {selectedIncident.id}
+                </h2>
+              </div>
+              <button
+                onClick={() => setSelectedIncidentId(null)}
+                className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label="Close incident"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="flex-1 overflow-y-auto p-3">
+              <IncidentDetail
+                incident={selectedIncident}
+                viewerRole="school"
+              />
+            </div>
+          </aside>
+        ) : (
+          <NotificationBar onSelectIncident={setSelectedIncidentId} />
+        )}
       </div>
 
+      {/* Floating police-comms bubble stays available even when the detail
+          drawer is open — the drawer's embedded chat is filtered to the
+          incident, this one is the global comms channel. */}
       <CommunicationWindow viewerRole="school" />
     </div>
   );
