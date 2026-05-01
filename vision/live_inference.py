@@ -43,8 +43,8 @@ Usage
     --threshold 0.35  --iou 0.45  --imgsz 1280
     --no_sahi        disable tiled inference (faster, less accurate on small guns)
     --no_pose        disable pose-overlap constraint
-    --kofn_k 4       detections required in rolling window (default: 4)
-    --kofn_n 6       rolling window size in frames (default: 6)
+    --kofn_k 3       detections required in rolling window (default: 3)
+    --kofn_n 4       rolling window size in frames (default: 4)
     --log_file vision/detections.jsonl
     --ably_key KEY   --channel gunshot-detection
     --s3_bucket my-bucket  --aws_region eu-west-1
@@ -108,8 +108,8 @@ ALERT_COOLDOWN_SECS = 5.0   # minimum seconds between consecutive alerts
 S3_UPLOAD_WORKERS   = 4     # max concurrent S3 upload threads
 
 # Temporal k-of-n defaults (Olmos MULTICAST: 80% FP reduction)
-DEFAULT_KOFN_K      = 4     # positive frames required
-DEFAULT_KOFN_N      = 6     # rolling window size
+DEFAULT_KOFN_K      = 3     # positive frames required
+DEFAULT_KOFN_N      = 4     # rolling window size
 
 # SAHI tiling defaults (Hnoohom 2022: 10× mAP on small CCTV guns)
 SAHI_SLICE_H        = 512

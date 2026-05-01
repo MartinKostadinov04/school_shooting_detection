@@ -461,9 +461,9 @@ def main() -> None:
                              "numpy combinations.")
     parser.add_argument("--no_pose",         action="store_true",
                         help="Disable the pose-overlap (hand-region) FP filter.")
-    parser.add_argument("--kofn_k",          type=int,   default=4,
+    parser.add_argument("--kofn_k",          type=int,   default=3,
                         help="Frames required positive in the temporal gate.")
-    parser.add_argument("--kofn_n",          type=int,   default=6,
+    parser.add_argument("--kofn_n",          type=int,   default=4,
                         help="Rolling temporal-gate window size.")
     args = parser.parse_args()
 
