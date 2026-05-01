@@ -166,13 +166,12 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env — set ABLY_API_KEY and JWT_SECRET at minimum
+# Edit .env — set ABLY_API_KEY at minimum
 ```
 
 | Variable | Required for | What happens without it |
 |---|---|---|
 | `ABLY_API_KEY` | Live dashboard alerts | Inference still runs and writes JSONL logs; dashboard does not update in real time |
-| `JWT_SECRET` | API authentication | Backend starts but login tokens are signed with the insecure placeholder |
 | `S3_BUCKET` + AWS credentials | Production audio/video upload | S3 upload is silently skipped; demo uses local file serving via FastAPI `/media` instead |
 
 ### 3. Full stack
@@ -190,13 +189,6 @@ This starts:
 2. **React dashboard** at `http://localhost:5173` — school and police views
 3. **Audio inference** — mic listener on `gunshot-detection` channel
 4. **Vision inference** — webcam listener on the same channel
-
-### Demo credentials
-
-| Role | Email | Password |
-|---|---|---|
-| School Operator | school@demo.com | school123 |
-| Dispatch Officer | police@demo.com | police123 |
 
 ---
 
@@ -341,7 +333,6 @@ frames before an alert fires, suppressing single-frame false positives.
 | Variable | Used by | Description |
 |---|---|---|
 | `ABLY_API_KEY` | inference, vision, cascade, API | Ably API key (or pass `--ably_key`). Without it, inference runs in log-only mode. |
-| `JWT_SECRET` | API auth | Backend JWT signing key. Change before deploying. |
 | `DATABASE_URL` | API persistence | Defaults to `sqlite:///data/tacticaleye.db`. Set to a Postgres URL for production. |
 | `S3_BUCKET` | inference, vision, cascade, API | S3 bucket name. **Production only** — omit in dev; local file serving is used instead. |
 | `AWS_ACCESS_KEY_ID` | S3 upload | Standard boto3 credential env var. |

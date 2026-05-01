@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.database import Base, engine, SessionLocal
-from api.routes import auth, devices, incidents, messages, ably_token
+from api.routes import devices, incidents, messages, ably_token
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,6 @@ async def lifespan(app: FastAPI):
     _migrate_add_columns_sqlite()
     db = SessionLocal()
     try:
-        auth.seed_users(db)
         devices.seed_devices(db)
         incidents.seed_incidents(db)
         messages.seed_messages(db)
@@ -98,7 +97,7 @@ if _demo.exists():
     )
 
 # Mount all route modules under /api
-for router_module in (auth, devices, incidents, messages, ably_token):
+for router_module in (devices, incidents, messages, ably_token):
     app.include_router(router_module.router, prefix="/api")
 
 # Serve built frontend in production

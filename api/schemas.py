@@ -7,25 +7,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 
-# ---------- Auth ----------
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class AuthUser(BaseModel):
-    email: str
-    role: Literal["school", "police"]
-    displayName: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: AuthUser
-
-
 # ---------- Devices ----------
 
 DeviceType   = Literal["camera", "microphone"]
